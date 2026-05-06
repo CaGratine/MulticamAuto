@@ -37,6 +37,13 @@ USE_BEST_ANGLE_WHEN_LOW = True
 APPLY_MULTICAM = False
 EXPORT_DECISIONS_JSON = True
 DECISIONS_JSON_NAME = "multicam_decisions.json"
+AUTO_GENERATE_FCPXML = True
+AUTO_IMPORT_FCPXML_IN_RESOLVE = True #False pour désactiver
+FCPXML_GENERATOR_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\generate_multicam_fcpxml_from_decisions.py"
+GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
+FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
+FCPXML_START_TC = "00:00:00:00"
+FCPXML_AUDIO_MODE = "single-pgm-track"  # selected-angle | video-only | pgm-angle | single-pgm-track
 # Recale uniquement les indices utilises pour le matching OpenCV afin
 # d'eviter des frames negatives en debut de decision list.
 AUTO_MATCH_CALIBRATE_TO_PGM_START = False
@@ -287,6 +294,67 @@ def hist_score_external(
     except Exception as exc:  # noqa: BLE001
         log(f"FAIL parse helper output: {exc!r} | stdout={proc.stdout!r}")
         return None, -1.0
+
+
+def run_generate_fcpxml(decisions_json: str, output_fcpxml: str) -> bool:
+    if not os.path.isfile(FCPXML_GENERATOR_SCRIPT):
+        log(f"FAIL: generateur FCPXML introuvable: {FCPXML_GENERATOR_SCRIPT}")
+        return False
+    if not os.path.isfile(HELPER_PYTHON):
+        log(f"FAIL: python introuvable pour generateur FCPXML: {HELPER_PYTHON}")
+        return False
+
+    cmd = [
+        HELPER_PYTHON,
+        FCPXML_GENERATOR_SCRIPT,
+        "--decisions-json",
+        decisions_json,
+        "--output-fcpxml",
+        output_fcpxml,
+        "--timeline-name",
+        FCPXML_TIMELINE_NAME,
+        "--start-tc",
+        FCPXML_START_TC,
+        "--mc-audio-mode",
+        FCPXML_AUDIO_MODE,
+    ]
+    kwargs: Dict[str, Any] = {"text": True, "capture_output": True, "check": False}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    proc = subprocess.run(cmd, **kwargs)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        log(f"FAIL generate FCPXML rc={proc.returncode}: {err}")
+        return False
+    log(f"[FCPXML] genere: {output_fcpxml}")
+    return True
+
+
+def import_fcpxml_into_resolve(project: Any, fcpxml_path: str) -> bool:
+    # Methode 1: project.ImportTimelineFromFile
+    import_project_fn = getattr(project, "ImportTimelineFromFile", None)
+    if callable(import_project_fn):
+        ok = import_project_fn(fcpxml_path)
+        if ok:
+            log(f"[FCPXML] importe via project: {fcpxml_path}")
+            return True
+        log("[WARN] project.ImportTimelineFromFile a retourne False.")
+    else:
+        log("[INFO] project.ImportTimelineFromFile indisponible/non-callable.")
+
+    # Methode 2: mediaPool.ImportTimelineFromFile
+    media_pool = safe_call(project, "GetMediaPool")
+    import_pool_fn = getattr(media_pool, "ImportTimelineFromFile", None) if media_pool else None
+    if callable(import_pool_fn):
+        ok = import_pool_fn(fcpxml_path)
+        if ok:
+            log(f"[FCPXML] importe via mediaPool: {fcpxml_path}")
+            return True
+        log("[WARN] mediaPool.ImportTimelineFromFile a retourne False.")
+    else:
+        log("[INFO] mediaPool.ImportTimelineFromFile indisponible/non-callable.")
+
+    return False
 
 
 def infer_source_start_frame(obj: Any, mp: Any, fps: float) -> int:
@@ -627,6 +695,7 @@ def main() -> int:
     if EXPORT_DECISIONS_JSON:
         script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
         out_json = os.path.join(script_dir, DECISIONS_JSON_NAME)
+        out_fcpxml = os.path.join(script_dir, GENERATED_FCPXML_NAME)
         match_extra_offsets_list = [int(match_extra_offsets.get(i + 1, 0)) for i in range(len(MANUAL_ANGLE_FILE_PATHS))]
         payload: Dict[str, Any] = {
             "fps": fps,
@@ -650,6 +719,13 @@ def main() -> int:
         with open(out_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         log(f"[EXPORT] {len(decisions)} decisions -> {out_json}")
+
+        if AUTO_GENERATE_FCPXML:
+            if run_generate_fcpxml(out_json, out_fcpxml):
+                if AUTO_IMPORT_FCPXML_IN_RESOLVE:
+                    imported = import_fcpxml_into_resolve(project, out_fcpxml)
+                    if not imported:
+                        log(f"[WARN] Echec import FCPXML dans Resolve: {out_fcpxml}")
 
     log("Termine.")
     return 0

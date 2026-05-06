@@ -70,6 +70,8 @@ def main() -> int:
         help="Force un repere sequence a 00:00:00:00 pour eviter les ambigu�t�s tcStart Resolve",
     )
     args = ap.parse_args()
+    output_basename = os.path.splitext(os.path.basename(args.output_fcpxml))[0].strip()
+    effective_timeline_name = output_basename or args.timeline_name
 
     with open(args.decisions_json, "r", encoding="utf-8") as f:
         data: Dict[str, Any] = json.load(f)
@@ -181,8 +183,9 @@ def main() -> int:
             },
         )
 
+    multicam_display_name = effective_timeline_name
     media_id = "r_media_mc"
-    media = ET.SubElement(resources, "media", {"id": media_id, "name": "Auto Multicam"})
+    media = ET.SubElement(resources, "media", {"id": media_id, "name": multicam_display_name})
     multicam = ET.SubElement(
         media,
         "multicam",
@@ -232,8 +235,8 @@ def main() -> int:
     pgm_clip_start_frames = pgm_asset_start_frames + pgm_clip_source_start + max(0, pgm_clip_sync)
 
     library = ET.SubElement(root, "library")
-    event = ET.SubElement(library, "event", {"name": f"{args.timeline_name} (Auto)"})
-    project = ET.SubElement(event, "project", {"name": args.timeline_name})
+    event = ET.SubElement(library, "event", {"name": f"{effective_timeline_name} (Auto)"})
+    project = ET.SubElement(event, "project", {"name": effective_timeline_name})
     seq = ET.SubElement(
         project,
         "sequence",
@@ -274,7 +277,7 @@ def main() -> int:
             "mc-clip",
             {
                 "offset": frames_to_fcptime(offset_frames, fps),
-                "name": "Auto Multicam",
+                "name": multicam_display_name,
                 "start": frames_to_fcptime(seq_tc_start_frames + multicam_media_pos, fps),
                 "duration": frames_to_fcptime(dur_frames, fps),
                 "ref": media_id,
@@ -301,7 +304,7 @@ def main() -> int:
                 "offset": frames_to_fcptime(tc_start_frames, fps),
                 "offset": frames_to_fcptime(0, fps),
                 "offset": frames_to_fcptime(seq_tc_start_frames, fps),
-                "name": "Auto Multicam Audio PGM",
+                "name": f"{multicam_display_name} Audio PGM",
                 "start": frames_to_fcptime(seq_tc_start_frames + audio_mc_start, fps),
                 "duration": frames_to_fcptime(total_duration, fps),
                 "ref": media_id,

@@ -39,6 +39,7 @@ EXPORT_DECISIONS_JSON = True
 DECISIONS_JSON_NAME = "multicam_decisions.json"
 AUTO_GENERATE_FCPXML = True
 AUTO_IMPORT_FCPXML_IN_RESOLVE = True #False pour désactiver
+AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM = True
 FCPXML_GENERATOR_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\generate_multicam_fcpxml_from_decisions.py"
 GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
@@ -117,6 +118,17 @@ def parse_fps(v: Any) -> Optional[float]:
         return float(str(v).replace(",", "."))
     except Exception:
         return None
+
+
+def sanitize_filename(name: str) -> str:
+    cleaned = "".join(ch if ch not in '<>:"/\\|?*' else "_" for ch in str(name)).strip()
+    return cleaned or "Timeline_auto_multicam"
+
+
+def make_fcpxml_name_from_clip_name(clip_name: str) -> str:
+    root, _ = os.path.splitext(str(clip_name).strip())
+    stem = sanitize_filename(root or clip_name)
+    return f"{stem} Auto.fcpxml"
 
 
 def timecode_to_frames(tc: str, fps: float) -> int:
@@ -296,7 +308,7 @@ def hist_score_external(
         return None, -1.0
 
 
-def run_generate_fcpxml(decisions_json: str, output_fcpxml: str) -> bool:
+def run_generate_fcpxml(decisions_json: str, output_fcpxml: str, timeline_name: Optional[str] = None) -> bool:
     if not os.path.isfile(FCPXML_GENERATOR_SCRIPT):
         log(f"FAIL: generateur FCPXML introuvable: {FCPXML_GENERATOR_SCRIPT}")
         return False
@@ -304,6 +316,7 @@ def run_generate_fcpxml(decisions_json: str, output_fcpxml: str) -> bool:
         log(f"FAIL: python introuvable pour generateur FCPXML: {HELPER_PYTHON}")
         return False
 
+    effective_timeline_name = (timeline_name or "").strip() or FCPXML_TIMELINE_NAME
     cmd = [
         HELPER_PYTHON,
         FCPXML_GENERATOR_SCRIPT,
@@ -312,7 +325,7 @@ def run_generate_fcpxml(decisions_json: str, output_fcpxml: str) -> bool:
         "--output-fcpxml",
         output_fcpxml,
         "--timeline-name",
-        FCPXML_TIMELINE_NAME,
+        effective_timeline_name,
         "--start-tc",
         FCPXML_START_TC,
         "--mc-audio-mode",
@@ -387,6 +400,60 @@ def infer_sync_offset_frames(source_obj: Any) -> int:
     return 0
 
 
+def pick_selected_media_pool_item(media_pool: Any) -> Any:
+    selected = safe_call(media_pool, "GetSelectedClips")
+    if isinstance(selected, dict) and selected:
+        return next(iter(selected.values()))
+    if isinstance(selected, list) and selected:
+        return selected[0]
+    return None
+
+
+def unique_timeline_name(project: Any, base_name: str) -> str:
+    timeline_count = safe_call(project, "GetTimelineCount") or 0
+    existing: List[str] = []
+    for i in range(1, int(timeline_count) + 1):
+        tl = safe_call(project, "GetTimelineByIndex", i)
+        name = safe_call(tl, "GetName")
+        if isinstance(name, str):
+            existing.append(name)
+    if base_name not in existing:
+        return base_name
+    n = 2
+    while True:
+        candidate = f"{base_name} ({n})"
+        if candidate not in existing:
+            return candidate
+        n += 1
+
+
+def create_timeline_and_detect_scenecuts_from_selected_pgm(project: Any) -> Tuple[Optional[Any], Optional[str]]:
+    media_pool = safe_call(project, "GetMediaPool")
+    if not media_pool:
+        log("FAIL: MediaPool inaccessible.")
+        return None, None
+    selected_item = pick_selected_media_pool_item(media_pool)
+    if not selected_item:
+        log("FAIL: Aucun clip selectionne dans le Media Pool.")
+        return None, None
+
+    selected_name = str(safe_call(selected_item, "GetName") or "PGM_Selected")
+    timeline_name = unique_timeline_name(project, selected_name)
+    timeline = safe_call(media_pool, "CreateTimelineFromClips", timeline_name, [selected_item])
+    if not timeline:
+        log("FAIL: CreateTimelineFromClips a echoue.")
+        return None, None
+
+    safe_call(project, "SetCurrentTimeline", timeline)
+    log(f"OK: Timeline creee '{timeline_name}'")
+    detect_ok = safe_call(timeline, "DetectSceneCuts")
+    if detect_ok:
+        log("OK: DetectSceneCuts termine.")
+    else:
+        log("WARN: DetectSceneCuts a echoue ou indisponible sur cette timeline.")
+    return timeline, selected_name
+
+
 def main() -> int:
     log("=== Multicam auto switch (inside Resolve) ===")
     script_path = globals().get("__file__") or (sys.argv[0] if sys.argv else "<unknown>")
@@ -412,7 +479,15 @@ def main() -> int:
 
     pm = resolve.GetProjectManager()
     project = pm.GetCurrentProject() if pm else None
-    timeline = project.GetCurrentTimeline() if project else None
+    timeline = None
+    selected_pgm_name_for_export: Optional[str] = None
+    if project and AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM:
+        log("[STEP] Creation timeline + DetectSceneCuts depuis le PGM selectionne...")
+        timeline, selected_pgm_name_for_export = create_timeline_and_detect_scenecuts_from_selected_pgm(project)
+        if not timeline:
+            return 1
+    else:
+        timeline = project.GetCurrentTimeline() if project else None
     if not timeline:
         log("FAIL: aucune timeline active.")
         return 1
@@ -710,7 +785,10 @@ def main() -> int:
     if EXPORT_DECISIONS_JSON:
         script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
         out_json = os.path.join(script_dir, DECISIONS_JSON_NAME)
-        out_fcpxml = os.path.join(script_dir, GENERATED_FCPXML_NAME)
+        fcpxml_name = GENERATED_FCPXML_NAME
+        if selected_pgm_name_for_export:
+            fcpxml_name = make_fcpxml_name_from_clip_name(selected_pgm_name_for_export)
+        out_fcpxml = os.path.join(script_dir, fcpxml_name)
         match_extra_offsets_list = [int(match_extra_offsets.get(i + 1, 0)) for i in range(len(MANUAL_ANGLE_FILE_PATHS))]
         payload: Dict[str, Any] = {
             "fps": fps,
@@ -736,7 +814,8 @@ def main() -> int:
         log(f"[EXPORT] {len(decisions)} decisions -> {out_json}")
 
         if AUTO_GENERATE_FCPXML:
-            if run_generate_fcpxml(out_json, out_fcpxml):
+            timeline_name_for_import = os.path.splitext(os.path.basename(out_fcpxml))[0]
+            if run_generate_fcpxml(out_json, out_fcpxml, timeline_name_for_import):
                 if AUTO_IMPORT_FCPXML_IN_RESOLVE:
                     imported = import_fcpxml_into_resolve(project, out_fcpxml)
                     if not imported:

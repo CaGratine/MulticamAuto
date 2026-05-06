@@ -40,6 +40,10 @@ DECISIONS_JSON_NAME = "multicam_decisions.json"
 AUTO_GENERATE_FCPXML = True
 AUTO_IMPORT_FCPXML_IN_RESOLVE = True #False pour désactiver
 AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM = True
+USE_EXTRACTED_CONFIG_JSON = True
+EXTRACTED_CONFIG_JSON_NAME = "multicam_extracted_config.json"
+REQUIRE_FRESH_EXTRACTED_CONFIG_JSON = True
+EXTRACTED_CONFIG_MAX_AGE_MINUTES = 30
 FCPXML_GENERATOR_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\generate_multicam_fcpxml_from_decisions.py"
 GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
@@ -129,6 +133,35 @@ def make_fcpxml_name_from_clip_name(clip_name: str) -> str:
     root, _ = os.path.splitext(str(clip_name).strip())
     stem = sanitize_filename(root or clip_name)
     return f"{stem} Auto.fcpxml"
+
+
+def get_project_cache_dir(project: Any) -> Optional[str]:
+    for key in ("perfCacheClipsLocation", "cacheFileLocation", "CacheFileLocation", "CacheClipLocation"):
+        p = safe_call(project, "GetSetting", key) if project else None
+        if isinstance(p, str) and p.strip():
+            return p.strip()
+    settings = safe_call(project, "GetSetting") if project else None
+    if isinstance(settings, dict):
+        for k, v in settings.items():
+            if "cache" in str(k).lower() and isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def config_json_candidates(script_path: str, project: Any) -> List[str]:
+    env_path = (os.getenv("MULTICAM_CONFIG_JSON_PATH") or "").strip()
+    script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path else os.getcwd()
+    candidates: List[str] = []
+    if env_path:
+        candidates.append(env_path)
+    cache_dir = get_project_cache_dir(project)
+    if cache_dir:
+        candidates.append(os.path.join(cache_dir, EXTRACTED_CONFIG_JSON_NAME))
+    candidates.append(os.path.join(script_dir, EXTRACTED_CONFIG_JSON_NAME))
+    localappdata = (os.getenv("LOCALAPPDATA") or "").strip()
+    if localappdata:
+        candidates.append(os.path.join(localappdata, "Temp", EXTRACTED_CONFIG_JSON_NAME))
+    return candidates
 
 
 def timecode_to_frames(tc: str, fps: float) -> int:
@@ -454,10 +487,99 @@ def create_timeline_and_detect_scenecuts_from_selected_pgm(project: Any) -> Tupl
     return timeline, selected_name
 
 
+def apply_extracted_config_json(config_path: str) -> bool:
+    global MANUAL_ANGLE_FILE_PATHS
+    global MANUAL_ANGLE_SYNC_OFFSETS
+    global MANUAL_ANGLE_SOURCE_STARTS
+    global MANUAL_ANGLE_START_TCS
+    global MANUAL_ANGLE_SOURCE_FPS
+    global PGM_REFERENCE_PATH
+    global PGM_REFERENCE_ITEM_START_OPEN
+    global PGM_REFERENCE_SOURCE_START_IN_FILE
+    global PGM_REFERENCE_START_TC
+    global PGM_REFERENCE_SYNC_OFFSET
+    global PGM_REFERENCE_FPS
+
+    if not os.path.isfile(config_path):
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        log(f"[WARN] JSON config illisible: {config_path} ({exc!r})")
+        return False
+
+    file_paths = data.get("manual_angle_file_paths")
+    if isinstance(file_paths, list) and file_paths:
+        MANUAL_ANGLE_FILE_PATHS = [str(x) for x in file_paths if str(x).strip()]
+    sync_offsets = data.get("manual_angle_sync_offsets")
+    if isinstance(sync_offsets, list):
+        MANUAL_ANGLE_SYNC_OFFSETS = [to_int(x) or 0 for x in sync_offsets]
+    source_starts = data.get("manual_angle_source_starts")
+    if isinstance(source_starts, list):
+        MANUAL_ANGLE_SOURCE_STARTS = [to_int(x) or 0 for x in source_starts]
+    start_tcs = data.get("manual_angle_start_tcs")
+    if isinstance(start_tcs, list):
+        MANUAL_ANGLE_START_TCS = [str(x) for x in start_tcs]
+    source_fps = data.get("manual_angle_source_fps")
+    if isinstance(source_fps, list):
+        MANUAL_ANGLE_SOURCE_FPS = [parse_fps(x) or 25.0 for x in source_fps]
+
+    pgm_ref_path = data.get("pgm_reference_path")
+    if pgm_ref_path is None or str(pgm_ref_path).strip():
+        PGM_REFERENCE_PATH = str(pgm_ref_path).strip() if pgm_ref_path is not None else None
+    PGM_REFERENCE_ITEM_START_OPEN = to_int(data.get("pgm_reference_item_start_open")) or 0
+    PGM_REFERENCE_SOURCE_START_IN_FILE = to_int(data.get("pgm_reference_source_start_in_file")) or 0
+    PGM_REFERENCE_START_TC = str(data.get("pgm_reference_start_tc") or "00:00:00:00")
+    PGM_REFERENCE_SYNC_OFFSET = to_int(data.get("pgm_reference_sync_offset")) or 0
+    PGM_REFERENCE_FPS = parse_fps(data.get("pgm_reference_fps")) or 25.0
+
+    log(f"[CONFIG] JSON charge: {config_path}")
+    log(f"[CONFIG] generated_from_timeline={data.get('generated_from_timeline')}")
+    log(f"[CONFIG] angles charges={len(MANUAL_ANGLE_FILE_PATHS)}")
+    return True
+
+
 def main() -> int:
     log("=== Multicam auto switch (inside Resolve) ===")
     script_path = globals().get("__file__") or (sys.argv[0] if sys.argv else "<unknown>")
+    script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
     log(f"Script file: {script_path}")
+    resolve = get_resolve()
+    if not resolve:
+        log("FAIL: impossible d'acceder a Resolve.")
+        return 1
+    pm = resolve.GetProjectManager()
+    project = pm.GetCurrentProject() if pm else None
+    if not project:
+        log("FAIL: aucun projet courant.")
+        return 1
+    if USE_EXTRACTED_CONFIG_JSON:
+        cfg_candidates = config_json_candidates(str(script_path), project)
+        cfg_path = next((p for p in cfg_candidates if os.path.isfile(p)), None)
+        if not cfg_path:
+            msg = "[CONFIG] JSON absent (emplacements testes): " + " | ".join(cfg_candidates)
+            if REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:
+                log(msg)
+                log("FAIL: lance d'abord extract_multicam_angles_from_open_timeline.py")
+                return 1
+            log(f"{msg} -> fallback valeurs en dur.")
+        else:
+            log(f"[CONFIG] JSON trouve: {cfg_path}")
+            age_seconds = max(0.0, time.time() - os.path.getmtime(cfg_path))
+            max_age_seconds = max(1, int(EXTRACTED_CONFIG_MAX_AGE_MINUTES * 60))
+            log(
+                f"[CONFIG] age={int(age_seconds)}s "
+                f"(max={max_age_seconds}s / {EXTRACTED_CONFIG_MAX_AGE_MINUTES} min)"
+            )
+            if age_seconds > max_age_seconds and REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:
+                log("FAIL: JSON config trop ancien; relance extract_multicam_angles_from_open_timeline.py")
+                return 1
+            if not apply_extracted_config_json(cfg_path):
+                if REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:
+                    log("FAIL: JSON config present mais non chargeable.")
+                    return 1
+                log(f"[CONFIG] JSON non chargeable, fallback valeurs en dur: {cfg_path}")
     log(f"MANUAL_ANGLE_FILE_PATHS count: {len(MANUAL_ANGLE_FILE_PATHS)}")
     anchor_enabled = USE_PGM_REFERENCE_ANCHOR and (PGM_REFERENCE_ITEM_START_OPEN > 0)
     log(
@@ -471,14 +593,6 @@ def main() -> int:
         log("Mode comparaison: OpenCV interne Resolve")
     else:
         log("Mode comparaison: helper externe (cv2 indisponible en interne)")
-
-    resolve = get_resolve()
-    if not resolve:
-        log("FAIL: impossible d'acceder a Resolve.")
-        return 1
-
-    pm = resolve.GetProjectManager()
-    project = pm.GetCurrentProject() if pm else None
     timeline = None
     selected_pgm_name_for_export: Optional[str] = None
     if project and AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM:
@@ -783,7 +897,6 @@ def main() -> int:
             cache.close()
 
     if EXPORT_DECISIONS_JSON:
-        script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
         out_json = os.path.join(script_dir, DECISIONS_JSON_NAME)
         fcpxml_name = GENERATED_FCPXML_NAME
         if selected_pgm_name_for_export:

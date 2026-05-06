@@ -11,8 +11,76 @@ des blocs prets a coller dans multicam_auto_switch_segments_inside_resolve.py:
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Set
+
+OUTPUT_JSON_NAME = "multicam_extracted_config.json"
+DEBUG_LOG_CACHE_SETTINGS = True
+
+
+def is_writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_path = os.path.join(path, ".write_test_tmp")
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test_path)
+        return True
+    except Exception:
+        return False
+
+
+def get_project_cache_dir(project: Any) -> Optional[str]:
+    for key in ("perfCacheClipsLocation", "cacheFileLocation", "CacheFileLocation", "CacheClipLocation"):
+        p = safe_call(project, "GetSetting", key)
+        if isinstance(p, str) and p.strip():
+            return p.strip()
+    settings = safe_call(project, "GetSetting")
+    if isinstance(settings, dict):
+        for k, v in settings.items():
+            if "cache" in str(k).lower() and isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def log_cache_related_project_settings(project: Any) -> None:
+    settings = safe_call(project, "GetSetting")
+    if not isinstance(settings, dict):
+        log("[DEBUG CACHE] Project:GetSetting() indisponible ou non-dict.")
+        return
+    cache_items = [(str(k), v) for k, v in settings.items() if "cache" in str(k).lower()]
+    if not cache_items:
+        log("[DEBUG CACHE] aucune cle contenant 'cache' dans Project:GetSetting().")
+        return
+    log("[DEBUG CACHE] cles detectees:")
+    for k, v in sorted(cache_items, key=lambda kv: kv[0].lower()):
+        log(f"  - {k} = {v}")
+
+
+def config_json_candidates(script_path: str, project: Any) -> List[str]:
+    env_path = (os.getenv("MULTICAM_CONFIG_JSON_PATH") or "").strip()
+    script_dir = os.path.dirname(os.path.abspath(script_path))
+    candidates: List[str] = []
+    if env_path:
+        candidates.append(env_path)
+    cache_dir = get_project_cache_dir(project)
+    if cache_dir:
+        candidates.append(os.path.join(cache_dir, OUTPUT_JSON_NAME))
+    candidates.append(os.path.join(script_dir, OUTPUT_JSON_NAME))
+    localappdata = (os.getenv("LOCALAPPDATA") or "").strip()
+    if localappdata:
+        candidates.append(os.path.join(localappdata, "Temp", OUTPUT_JSON_NAME))
+    return candidates
+
+
+def choose_writable_config_path(script_path: str, project: Any) -> Optional[str]:
+    for p in config_json_candidates(script_path, project):
+        parent = os.path.dirname(os.path.abspath(p)) or "."
+        if is_writable_dir(parent):
+            return p
+    return None
 
 
 def log(msg: str) -> None:
@@ -107,6 +175,8 @@ def main() -> int:
 
     pm = resolve.GetProjectManager()
     project = pm.GetCurrentProject() if pm else None
+    if DEBUG_LOG_CACHE_SETTINGS and project:
+        log_cache_related_project_settings(project)
     timeline = project.GetCurrentTimeline() if project else None
     if not timeline:
         log("FAIL: aucune timeline active.")
@@ -227,6 +297,31 @@ def main() -> int:
     if not file_paths:
         log("FAIL: aucun angle detecte (File Path manquant sur pistes).")
         return 1
+
+    script_path = str(globals().get("__file__") or "extract_multicam_angles_from_open_timeline.py")
+    out_json = choose_writable_config_path(script_path, project)
+    if not out_json:
+        log("FAIL: impossible de trouver un emplacement inscriptible pour le JSON config.")
+        return 1
+    payload: Dict[str, Any] = {
+        "manual_angle_file_paths": file_paths,
+        "manual_angle_sync_offsets": sync_offsets,
+        "manual_angle_source_starts": source_starts,
+        "manual_angle_start_tcs": source_start_tcs,
+        "manual_angle_source_fps": source_fps,
+        "pgm_reference_path": pgm_ref["file_path"] if pgm_ref else None,
+        "pgm_reference_item_start_open": int(pgm_ref["item_start_open"]) if pgm_ref else 0,
+        "pgm_reference_source_start_in_file": int(pgm_ref["source_start_in_file"]) if pgm_ref else 0,
+        "pgm_reference_start_tc": str(pgm_ref["start_tc"]) if pgm_ref else "00:00:00:00",
+        "pgm_reference_sync_offset": int(mc_start_open - pgm_ref["item_start_open"]) if pgm_ref else 0,
+        "pgm_reference_fps": float(pgm_ref["fps"]) if pgm_ref else float(timeline_fps),
+        "generated_from_timeline": str(timeline_name),
+        "generated_at_epoch": int(time.time()),
+        "generated_at_local": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    log(f"[EXPORT JSON] {out_json}")
 
     log("\n--- A copier dans multicam_auto_switch_segments_inside_resolve.py ---")
     log("MANUAL_ANGLE_FILE_PATHS = [")

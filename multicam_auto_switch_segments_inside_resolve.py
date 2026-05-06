@@ -11,6 +11,7 @@ import os
 import json
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -125,6 +126,14 @@ def frames_to_timecode(frames: int, fps: float) -> str:
     ss = rem // f
     ff = rem % f
     return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+
+
+def format_seconds(total_seconds: float) -> str:
+    s = max(0, int(round(total_seconds)))
+    hh = s // 3600
+    mm = (s % 3600) // 60
+    ss = s % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def get_resolve() -> Any:
@@ -432,6 +441,8 @@ def main() -> int:
     cache = FrameCache() if CV_AVAILABLE else None
     prev_angle = INITIAL_ANGLE
     decisions: List[Dict[str, Any]] = []
+    total_segments = len(segments)
+    t0 = time.perf_counter()
     match_extra_offsets: Dict[int, int] = {ang.angle: 0 for ang in angles}
     if AUTO_MATCH_CALIBRATE_TO_PGM_START and segments:
         rel0 = segments[0].start - mc_start
@@ -446,8 +457,18 @@ def main() -> int:
                     f"extra={match_extra_offsets[ang.angle]}"
                 )
     try:
-        for seg in segments:
+        for done_idx, seg in enumerate(segments, start=1):
             seg_tc = frames_to_timecode(seg.start, fps)
+            elapsed = time.perf_counter() - t0
+            avg = elapsed / done_idx if done_idx > 0 else 0.0
+            remaining = avg * (total_segments - done_idx)
+            pct = (100.0 * done_idx / total_segments) if total_segments else 100.0
+            log(
+                f"[PROGRESS] {done_idx}/{total_segments} ({pct:.1f}%) "
+                f"| elapsed {format_seconds(elapsed)} "
+                f"| ETA {format_seconds(remaining)} "
+                f"| seg {seg.index} {seg_tc}"
+            )
             pgm_mp = safe_call(seg.item, "GetMediaPoolItem")
             pgm_props = safe_call(pgm_mp, "GetClipProperty") or {}
             pgm_fp = (pgm_props.get("File Path") or "").strip()

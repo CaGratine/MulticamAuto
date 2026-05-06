@@ -17,23 +17,23 @@
         <asset id="r_asset_6" name="Capture0001.mov" format="r_fmt_6" start="190657/25s" duration="56392/25s" hasVideo="1" hasAudio="1" audioSources="1" audioChannels="2" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/PGM/CARTE_01/Capture0001.mov" />
         <media id="r_media_mc" name="Auto Multicam">
             <multicam format="r_fmt_main" tcStart="0/25s" tcFormat="NDF">
-                <mc-angle name="A" angleID="db14e86e-b727-42ec-92c1-cf3181f02803">
-                    <asset-clip offset="862/25s" name="A002C002_260425IH.MXF" start="1709719/25s" duration="90695/25s" ref="r_asset_1" enabled="1" />
+                <mc-angle name="A" angleID="fe9972a6-44f8-4fa2-93e5-a9594e2651dc">
+                    <asset-clip offset="862/25s" name="A002C002_260425IH.MXF" start="1709719/25s" duration="92022/25s" ref="r_asset_1" enabled="1" />
                 </mc-angle>
-                <mc-angle name="B" angleID="81bf9b56-1630-4bd8-b553-f0e985c6841b">
-                    <asset-clip offset="50/25s" name="B002C003_2604256E.MXF" start="1696657/25s" duration="90695/25s" ref="r_asset_2" enabled="1" />
+                <mc-angle name="B" angleID="9c455e1f-5b01-427a-8034-341cf3b64f5e">
+                    <asset-clip offset="50/25s" name="B002C003_2604256E.MXF" start="1696657/25s" duration="92022/25s" ref="r_asset_2" enabled="1" />
                 </mc-angle>
-                <mc-angle name="C" angleID="8d172715-a50d-4b51-9213-4c4d35e5b691">
-                    <asset-clip offset="36/25s" name="C002C002_2604258J.MXF" start="373228/25s" duration="90695/25s" ref="r_asset_3" enabled="1" />
+                <mc-angle name="C" angleID="b8506183-6008-4e4b-84cb-20cc6cf4a43e">
+                    <asset-clip offset="36/25s" name="C002C002_2604258J.MXF" start="373228/25s" duration="92022/25s" ref="r_asset_3" enabled="1" />
                 </mc-angle>
-                <mc-angle name="D" angleID="69dbc2ac-05b6-4042-8376-cdfd8ed06209">
-                    <asset-clip offset="96/25s" name="D002C002_260425QY.MXF" start="1852661/25s" duration="90695/25s" ref="r_asset_4" enabled="1" />
+                <mc-angle name="D" angleID="e69a15f8-0ac7-4cdc-9cdf-b81d7fcd9416">
+                    <asset-clip offset="96/25s" name="D002C002_260425QY.MXF" start="1852661/25s" duration="92022/25s" ref="r_asset_4" enabled="1" />
                 </mc-angle>
-                <mc-angle name="E" angleID="2da44890-cf7c-4872-93d9-592b583faf32">
-                    <asset-clip offset="108/25s" name="E002C002_260425YI.MXF" start="1843559/25s" duration="90695/25s" ref="r_asset_5" enabled="1" />
+                <mc-angle name="E" angleID="96d4325c-dfd8-4300-a133-765ef33e4022">
+                    <asset-clip offset="108/25s" name="E002C002_260425YI.MXF" start="1843559/25s" duration="92022/25s" ref="r_asset_5" enabled="1" />
                 </mc-angle>
-                <mc-angle name="PGM" angleID="43e11bad-11b2-4925-bf57-3510b3a8bc96">
-                    <asset-clip offset="0/25s" name="Capture0001.mov" start="190657/25s" duration="90695/25s" ref="r_asset_6" enabled="1" />
+                <mc-angle name="PGM" angleID="89bd27d9-456a-4b46-ae91-3ec1a62d7be9">
+                    <asset-clip offset="0/25s" name="Capture0001.mov" start="190657/25s" duration="92022/25s" ref="r_asset_6" enabled="1" />
                 </mc-angle>
             </multicam>
         </media>
@@ -41,25 +41,40 @@
     <library>
         <event name="Timeline Auto Multicam (Auto)">
             <project name="Timeline Auto Multicam">
-                <sequence format="r_fmt_main" tcStart="0/25s" tcFormat="NDF" duration="695/25s">
+                <sequence format="r_fmt_main" tcStart="0/25s" tcFormat="NDF" duration="2022/25s">
                     <spine>
                         <mc-clip offset="0/25s" name="Auto Multicam" start="10781/25s" duration="29/25s" ref="r_media_mc">
-                            <mc-source angleID="81bf9b56-1630-4bd8-b553-f0e985c6841b" srcEnable="video" />
+                            <mc-source angleID="9c455e1f-5b01-427a-8034-341cf3b64f5e" srcEnable="video" />
                         </mc-clip>
                         <mc-clip offset="29/25s" name="Auto Multicam" start="10810/25s" duration="199/25s" ref="r_media_mc">
-                            <mc-source angleID="2da44890-cf7c-4872-93d9-592b583faf32" srcEnable="video" />
+                            <mc-source angleID="96d4325c-dfd8-4300-a133-765ef33e4022" srcEnable="video" />
                         </mc-clip>
                         <mc-clip offset="228/25s" name="Auto Multicam" start="11009/25s" duration="195/25s" ref="r_media_mc">
-                            <mc-source angleID="81bf9b56-1630-4bd8-b553-f0e985c6841b" srcEnable="video" />
+                            <mc-source angleID="9c455e1f-5b01-427a-8034-341cf3b64f5e" srcEnable="video" />
                         </mc-clip>
                         <mc-clip offset="423/25s" name="Auto Multicam" start="11204/25s" duration="98/25s" ref="r_media_mc">
-                            <mc-source angleID="db14e86e-b727-42ec-92c1-cf3181f02803" srcEnable="video" />
+                            <mc-source angleID="fe9972a6-44f8-4fa2-93e5-a9594e2651dc" srcEnable="video" />
                         </mc-clip>
-                        <mc-clip offset="521/25s" name="Auto Multicam" start="11302/25s" duration="174/25s" ref="r_media_mc">
-                            <mc-source angleID="69dbc2ac-05b6-4042-8376-cdfd8ed06209" srcEnable="video" />
+                        <mc-clip offset="521/25s" name="Auto Multicam" start="11302/25s" duration="323/25s" ref="r_media_mc">
+                            <mc-source angleID="e69a15f8-0ac7-4cdc-9cdf-b81d7fcd9416" srcEnable="video" />
                         </mc-clip>
-                        <mc-clip offset="0/25s" name="Auto Multicam Audio PGM" start="10781/25s" duration="695/25s" ref="r_media_mc" lane="1">
-                            <mc-source angleID="43e11bad-11b2-4925-bf57-3510b3a8bc96" srcEnable="audio" />
+                        <mc-clip offset="844/25s" name="Auto Multicam" start="11625/25s" duration="243/25s" ref="r_media_mc">
+                            <mc-source angleID="fe9972a6-44f8-4fa2-93e5-a9594e2651dc" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="1087/25s" name="Auto Multicam" start="11868/25s" duration="399/25s" ref="r_media_mc">
+                            <mc-source angleID="96d4325c-dfd8-4300-a133-765ef33e4022" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="1486/25s" name="Auto Multicam" start="12267/25s" duration="137/25s" ref="r_media_mc">
+                            <mc-source angleID="e69a15f8-0ac7-4cdc-9cdf-b81d7fcd9416" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="1623/25s" name="Auto Multicam" start="12404/25s" duration="292/25s" ref="r_media_mc">
+                            <mc-source angleID="9c455e1f-5b01-427a-8034-341cf3b64f5e" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="1915/25s" name="Auto Multicam" start="12696/25s" duration="107/25s" ref="r_media_mc">
+                            <mc-source angleID="fe9972a6-44f8-4fa2-93e5-a9594e2651dc" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="0/25s" name="Auto Multicam Audio PGM" start="10781/25s" duration="2022/25s" ref="r_media_mc" lane="1">
+                            <mc-source angleID="89bd27d9-456a-4b46-ae91-3ec1a62d7be9" srcEnable="audio" />
                         </mc-clip>
                     </spine>
                 </sequence>

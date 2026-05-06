@@ -240,12 +240,18 @@ def hist_score_external(
         "size": [int(size[0]), int(size[1])],
     }
     try:
+        run_kwargs: Dict[str, Any] = {
+            "input": json.dumps(payload),
+            "text": True,
+            "capture_output": True,
+            "check": False,
+        }
+        if os.name == "nt":
+            # Evite l'ouverture d'une fenetre console par segment sous Windows.
+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         proc = subprocess.run(
             [HELPER_PYTHON, HELPER_SCRIPT],
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            check=False,
+            **run_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
         log(f"FAIL helper execution: {exc!r}")

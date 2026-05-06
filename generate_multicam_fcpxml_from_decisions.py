@@ -57,6 +57,18 @@ def main() -> int:
     ap.add_argument("--start-tc", default="01:00:00:00")
     ap.add_argument("--angle-names", default="A,B,C,D,E,PGM")
     ap.add_argument("--include-pgm-audio", action="store_true")
+    ap.add_argument(
+        "--mc-audio-mode",
+        choices=["selected-angle", "video-only", "pgm-angle", "single-pgm-track"],
+        default="single-pgm-track",
+        help="Audio: angle selectionne, video seule, audio PGM dans mc-clip, ou un seul mc-clip audio PGM",
+    )
+    ap.add_argument(
+        "--zero-based-sequence",
+        action="store_true",
+        default=True,
+        help="Force un repere sequence a 00:00:00:00 pour eviter les ambigu�t�s tcStart Resolve",
+    )
     args = ap.parse_args()
 
     with open(args.decisions_json, "r", encoding="utf-8") as f:
@@ -64,6 +76,7 @@ def main() -> int:
 
     fps = int(round(float(data.get("fps", 25))))
     tc_start_frames = timecode_to_frames(args.start_tc, fps)
+    seq_tc_start_frames = 0 if args.zero_based_sequence else tc_start_frames
     decisions: List[Dict[str, Any]] = data.get("decisions", [])
     if not decisions:
         raise RuntimeError("Aucune decision dans le JSON.")
@@ -113,6 +126,7 @@ def main() -> int:
     if fps0 > 0:
         fps = fps0
     tc_start_frames = timecode_to_frames(args.start_tc, fps)
+    seq_tc_start_frames = 0 if args.zero_based_sequence else tc_start_frames
 
     root = ET.Element("fcpxml", {"version": "1.8"})
     resources = ET.SubElement(root, "resources")
@@ -158,9 +172,11 @@ def main() -> int:
                 "start": frames_to_fcptime(start_frames_i, fps),
                 "duration": frames_to_fcptime(count if count > 0 else total_duration + start_frame + fps * 10, fps),
                 "hasVideo": "1",
-                "hasAudio": "1" if i == len(all_angle_paths) else "0",
-                "audioSources": "1" if i == len(all_angle_paths) else "0",
-                "audioChannels": "2" if i == len(all_angle_paths) else "0",
+                # Conserve l'audio sur toutes les sources pour rester coherent
+                # avec les rushes multicam (Resolve activera si piste audio presente).
+                "hasAudio": "1",
+                "audioSources": "1",
+                "audioChannels": "2",
                 "src": "file://localhost/" + p.replace("\\", "/"),
             },
         )
@@ -172,7 +188,7 @@ def main() -> int:
         "multicam",
         {
             "format": "r_fmt_main",
-            "tcStart": frames_to_fcptime(tc_start_frames, fps),
+                "tcStart": frames_to_fcptime(seq_tc_start_frames, fps),
             "tcFormat": "NDF",
         },
     )
@@ -223,14 +239,15 @@ def main() -> int:
         "sequence",
         {
             "format": "r_fmt_main",
-            "tcStart": frames_to_fcptime(tc_start_frames, fps),
+            "tcStart": frames_to_fcptime(seq_tc_start_frames, fps),
             "tcFormat": "NDF",
             "duration": frames_to_fcptime(total_duration, fps),
         },
     )
     spine = ET.SubElement(seq, "spine")
 
-    # Build mc-clip segments from decisions
+    # Build mc-clip segments from decisions (video cuts)
+    first_multicam_media_pos: int | None = None
     for d in decisions:
         seg_start = int(d["start_frame"])
         seg_end = int(d["end_frame"])
@@ -239,7 +256,8 @@ def main() -> int:
         final_angle = int(d.get("final_angle") or 1)
         final_angle = max(1, min(final_angle, len(src_paths)))  # force camera, pas PGM
         rel_frames = seg_start - start_frame
-        offset_frames = tc_start_frames + rel_frames
+        # Domaine absolu aligne sur tcStart de la sequence.
+        offset_frames = seq_tc_start_frames + rel_frames
         # Reference absolue de ce segment dans le fichier PGM.
         # Si absent (anciens JSON), fallback sur un calcul relatif.
         pgm_frame_idx = int(d.get("pgm_frame_idx", pgm_source_start + rel_frames))
@@ -248,7 +266,8 @@ def main() -> int:
         # source_abs = clip_start + (mc_pos - clip_offset)
         # => mc_pos = source_abs - clip_start + clip_offset
         multicam_media_pos = pgm_source_abs - pgm_clip_start_frames + pgm_clip_offset_frames
-        multicam_start_frames = tc_start_frames + multicam_media_pos
+        if first_multicam_media_pos is None:
+            first_multicam_media_pos = multicam_media_pos
         dur_frames = seg_end - seg_start
         mc = ET.SubElement(
             spine,
@@ -256,22 +275,51 @@ def main() -> int:
             {
                 "offset": frames_to_fcptime(offset_frames, fps),
                 "name": "Auto Multicam",
-                "start": frames_to_fcptime(multicam_start_frames, fps),
+                "start": frames_to_fcptime(seq_tc_start_frames + multicam_media_pos, fps),
                 "duration": frames_to_fcptime(dur_frames, fps),
                 "ref": media_id,
             },
         )
-        ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
+        if args.mc_audio_mode == "selected-angle":
+            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "all"})
+        elif args.mc_audio_mode == "pgm-angle":
+            # Video de l'angle decide + audio fixe depuis l'angle PGM.
+            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
+            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[len(all_angle_paths)], "srcEnable": "audio"})
+        else:
+            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
 
-    # Audio PGM continu optionnel (dernier asset).
-    if args.include_pgm_audio:
+    # Audio PGM continu:
+    # - mode "single-pgm-track": un seul segment mc-clip audio (angle PGM)
+    # - legacy: include_pgm_audio explicite (sauf si audio deja dans mc-clip pgm-angle)
+    if args.mc_audio_mode == "single-pgm-track":
+        audio_mc_start = first_multicam_media_pos if first_multicam_media_pos is not None else 0
+        mc_audio = ET.SubElement(
+            spine,
+            "mc-clip",
+            {
+                "offset": frames_to_fcptime(tc_start_frames, fps),
+                "offset": frames_to_fcptime(0, fps),
+                "offset": frames_to_fcptime(seq_tc_start_frames, fps),
+                "name": "Auto Multicam Audio PGM",
+                "start": frames_to_fcptime(seq_tc_start_frames + audio_mc_start, fps),
+                "duration": frames_to_fcptime(total_duration, fps),
+                "ref": media_id,
+                "lane": "1",
+            },
+        )
+        ET.SubElement(mc_audio, "mc-source", {"angleID": angle_ids[len(all_angle_paths)], "srcEnable": "audio"})
+    elif (
+        args.include_pgm_audio and args.mc_audio_mode != "pgm-angle"
+    ):
         pgm_asset_id = asset_ids[-1]
         pgm_asset_start = timecode_to_frames(pgm_start_tc, int(round(pgm_source_fps)))
         ET.SubElement(
             spine,
             "asset-clip",
             {
-                "offset": frames_to_fcptime(tc_start_frames, fps),
+                # Piste audio asset legacy: repere absolu sequence.
+                "offset": frames_to_fcptime(seq_tc_start_frames, fps),
                 "name": os.path.basename(pgm_path),
                 "start": frames_to_fcptime(pgm_asset_start + pgm_source_start, fps),
                 "duration": frames_to_fcptime(total_duration, fps),

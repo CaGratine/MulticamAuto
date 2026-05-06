@@ -26,7 +26,7 @@ except Exception:
 
 
 # ---------------------- Configuration utilisateur -------------------------- #
-PGM_TRACK = 2
+PGM_TRACK = 1
 MULTICAM_TRACK = 1
 MAX_ANGLES = 5
 SYNC_MODE = "relative"  # "relative" | "timecode"
@@ -422,12 +422,18 @@ def main() -> int:
 
     mc_raw = safe_call(timeline, "GetItemsInTrack", "video", MULTICAM_TRACK)
     mc_items = list(normalize_track_items(mc_raw))
-    if not mc_items:
-        log(f"FAIL: aucun clip sur V{MULTICAM_TRACK}.")
-        return 1
-    multicam = max(mc_items, key=lambda it: (to_int(safe_call(it, "GetEnd")) or 0) - (to_int(safe_call(it, "GetStart")) or 0))
-    mc_start = to_int(safe_call(multicam, "GetStart")) or 0
-    debug_methods(multicam, "TimelineItem multicam")
+    multicam = None
+    # Reference de depart pour les calculs relatifs dans la timeline de matching.
+    mc_start = to_int(safe_call(timeline, "GetStartFrame")) or 0
+    if APPLY_MULTICAM and mc_items:
+        multicam = max(
+            mc_items,
+            key=lambda it: (to_int(safe_call(it, "GetEnd")) or 0) - (to_int(safe_call(it, "GetStart")) or 0),
+        )
+        mc_start = to_int(safe_call(multicam, "GetStart")) or mc_start
+        debug_methods(multicam, "TimelineItem multicam")
+    else:
+        log(f"[INFO] Mode PGM-only actif (pas de multicam requis sur V{MULTICAM_TRACK}).")
 
     pgm_raw = safe_call(timeline, "GetItemsInTrack", "video", PGM_TRACK)
     pgm_items = sorted(list(normalize_track_items(pgm_raw)), key=lambda it: to_int(safe_call(it, "GetStart")) or 0)
@@ -443,10 +449,15 @@ def main() -> int:
     if not segments:
         log(f"FAIL: aucun segment exploitable sur V{PGM_TRACK}.")
         return 1
+    # Sans multicam sur la timeline, on utilise le premier segment comme ancre locale.
+    if multicam is None and segments:
+        mc_start = segments[0].start
 
     used_manual = False
 
-    srcs = safe_call(multicam, "GetSourceClips") or safe_call(multicam, "GetMulticamSourceClips") or []
+    srcs = []
+    if multicam is not None:
+        srcs = safe_call(multicam, "GetSourceClips") or safe_call(multicam, "GetMulticamSourceClips") or []
     if isinstance(srcs, dict):
         ordered = [srcs[k] for k in sorted(srcs.keys())]
     else:
@@ -679,6 +690,10 @@ def main() -> int:
             )
 
             if APPLY_MULTICAM:
+                if multicam is None:
+                    log(f"[WARN] Segment {seg.index} {seg_tc}: aucun clip multicam cible, skip SetMulticamAngle.")
+                    prev_angle = final_angle
+                    continue
                 ok = safe_call(multicam, "SetMulticamAngle", final_angle, seg.start)
                 if ok:
                     prev_angle = final_angle

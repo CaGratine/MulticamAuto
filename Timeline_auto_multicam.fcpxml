@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.8">
+    <resources>
+        <format id="r_fmt_main" name="Custom_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <format id="r_fmt_1" name="Src_1_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r_asset_1" name="A002C002_260425IH.MXF" format="r_fmt_1" start="1709719/25s" duration="55629/25s" hasVideo="1" hasAudio="0" audioSources="0" audioChannels="0" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/CAM_A/CARTE_01/XDROOT/Clip/A002C002_260425IH.MXF" />
+        <format id="r_fmt_2" name="Src_2_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r_asset_2" name="B002C003_2604256E.MXF" format="r_fmt_2" start="1696657/25s" duration="56393/25s" hasVideo="1" hasAudio="0" audioSources="0" audioChannels="0" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/CAM_B/CARTE_01/XDROOT/Clip/B002C003_2604256E.MXF" />
+        <format id="r_fmt_3" name="Src_3_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r_asset_3" name="C002C002_2604258J.MXF" format="r_fmt_3" start="373228/25s" duration="12056/25s" hasVideo="1" hasAudio="0" audioSources="0" audioChannels="0" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/CAM_C/CARTE_01/XDROOT/Clip/C002C002_2604258J.MXF" />
+        <format id="r_fmt_4" name="Src_4_3840x2160p25" frameDuration="1/25s" width="3840" height="2160" />
+        <asset id="r_asset_4" name="D002C002_260425QY.MXF" format="r_fmt_4" start="1852661/25s" duration="56426/25s" hasVideo="1" hasAudio="0" audioSources="0" audioChannels="0" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/CAM_D/CARTE_01/XDROOT/Clip/D002C002_260425QY.MXF" />
+        <format id="r_fmt_5" name="Src_5_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r_asset_5" name="E002C002_260425YI.MXF" format="r_fmt_5" start="1843559/25s" duration="56435/25s" hasVideo="1" hasAudio="0" audioSources="0" audioChannels="0" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/CAM_E/CARTE_01/XDROOT/Clip/E002C002_260425YI.MXF" />
+        <format id="r_fmt_6" name="Src_6_1920x1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r_asset_6" name="Capture0001.mov" format="r_fmt_6" start="190657/25s" duration="56392/25s" hasVideo="1" hasAudio="1" audioSources="1" audioChannels="2" src="file://localhost/F:/Fermactory 2026/RUSHES/JOUR_02/PGM/CARTE_01/Capture0001.mov" />
+        <media id="r_media_mc" name="Auto Multicam">
+            <multicam format="r_fmt_main" tcStart="90000/25s" tcFormat="NDF">
+                <mc-angle name="A" angleID="8f4fcaea-10a8-4e00-bfa8-d0609a653696">
+                    <asset-clip offset="862/25s" name="A002C002_260425IH.MXF" start="1709719/25s" duration="90695/25s" ref="r_asset_1" enabled="1" />
+                </mc-angle>
+                <mc-angle name="B" angleID="476bcdc9-b7f6-440a-8f74-41586c51f1ed">
+                    <asset-clip offset="50/25s" name="B002C003_2604256E.MXF" start="1696657/25s" duration="90695/25s" ref="r_asset_2" enabled="1" />
+                </mc-angle>
+                <mc-angle name="C" angleID="168f7b1a-bf0f-4970-acc3-9cd06fabca29">
+                    <asset-clip offset="36/25s" name="C002C002_2604258J.MXF" start="373228/25s" duration="90695/25s" ref="r_asset_3" enabled="1" />
+                </mc-angle>
+                <mc-angle name="D" angleID="27422c6d-98a0-454c-875b-edf5b5cfdf80">
+                    <asset-clip offset="96/25s" name="D002C002_260425QY.MXF" start="1852661/25s" duration="90695/25s" ref="r_asset_4" enabled="1" />
+                </mc-angle>
+                <mc-angle name="E" angleID="3590bee9-0773-4a86-8125-380c2c1deb14">
+                    <asset-clip offset="108/25s" name="E002C002_260425YI.MXF" start="1843559/25s" duration="90695/25s" ref="r_asset_5" enabled="1" />
+                </mc-angle>
+                <mc-angle name="PGM" angleID="444a5fb7-6932-49bd-86f8-b20948fb7171">
+                    <asset-clip offset="0/25s" name="Capture0001.mov" start="190657/25s" duration="90695/25s" ref="r_asset_6" enabled="1" />
+                </mc-angle>
+            </multicam>
+        </media>
+    </resources>
+    <library>
+        <event name="Timeline Auto Multicam (Auto)">
+            <project name="Timeline Auto Multicam">
+                <sequence format="r_fmt_main" tcStart="90000/25s" tcFormat="NDF" duration="695/25s">
+                    <spine>
+                        <mc-clip offset="90000/25s" name="Auto Multicam" start="100781/25s" duration="29/25s" ref="r_media_mc">
+                            <mc-source angleID="476bcdc9-b7f6-440a-8f74-41586c51f1ed" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="90029/25s" name="Auto Multicam" start="100810/25s" duration="199/25s" ref="r_media_mc">
+                            <mc-source angleID="476bcdc9-b7f6-440a-8f74-41586c51f1ed" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="90228/25s" name="Auto Multicam" start="101009/25s" duration="195/25s" ref="r_media_mc">
+                            <mc-source angleID="476bcdc9-b7f6-440a-8f74-41586c51f1ed" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="90423/25s" name="Auto Multicam" start="101204/25s" duration="98/25s" ref="r_media_mc">
+                            <mc-source angleID="8f4fcaea-10a8-4e00-bfa8-d0609a653696" srcEnable="video" />
+                        </mc-clip>
+                        <mc-clip offset="90521/25s" name="Auto Multicam" start="101302/25s" duration="174/25s" ref="r_media_mc">
+                            <mc-source angleID="476bcdc9-b7f6-440a-8f74-41586c51f1ed" srcEnable="video" />
+                        </mc-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

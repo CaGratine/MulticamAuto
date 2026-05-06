@@ -1,0 +1,632 @@
+"""
+multicam_auto_switch_segments_inside_resolve.py
+
+Version "inside Resolve" (Workspace > Scripts), sans connexion externe.
+Ce script applique des switches multicam a partir des segments PGM sur une piste.
+"""
+
+from __future__ import annotations
+
+import os
+import json
+import subprocess
+import sys
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+    CV_AVAILABLE = True
+except Exception:
+    cv2 = None  # type: ignore
+    np = None  # type: ignore
+    CV_AVAILABLE = False
+
+
+# ---------------------- Configuration utilisateur -------------------------- #
+PGM_TRACK = 2
+MULTICAM_TRACK = 1
+MAX_ANGLES = 5
+SYNC_MODE = "relative"  # "relative" | "timecode"
+CONFIDENCE_THRESHOLD = 0.30
+# En workflow "decision list", on prefere garder le meilleur angle trouve
+# meme si le score est sous le seuil, plutot que figer l'angle precedent.
+USE_BEST_ANGLE_WHEN_LOW = True
+APPLY_MULTICAM = False
+EXPORT_DECISIONS_JSON = True
+DECISIONS_JSON_NAME = "multicam_decisions.json"
+# Recale uniquement les indices utilises pour le matching OpenCV afin
+# d'eviter des frames negatives en debut de decision list.
+AUTO_MATCH_CALIBRATE_TO_PGM_START = False
+MIN_SEGMENT_FRAMES = 10
+INITIAL_ANGLE = 1
+MARKER_COLOR = "Yellow"
+DOWNSCALE_SIZE = (160, 90)
+DEBUG_IO = True
+CALIBRATE_MANUAL_OFFSETS = False  # decale sync_offset pour empecher frame_idx negatif
+# Si True, on ancre les calculs sur la reference PGM extraite du multicam ouvert.
+# C'est le mode recommande quand la timeline "decision" est construite a partir du PGM.
+USE_PGM_REFERENCE_ANCHOR = True
+# Fallback externe si cv2/numpy indisponibles dans Python Resolve.
+# Mettre le chemin Python qui a opencv-python installe (chez toi: Python 3.14).
+HELPER_PYTHON = r"C:\Python314\python.exe"
+# Chemin du helper (a copier aussi dans le dossier Scripts Resolve ou adapter).
+HELPER_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\cv_hist_compare_helper.py"
+# Fallback manuel si l'API n'expose pas les SourceClips multicam.
+# Renseigner 5 paths (angle 1..5) si necessaire.
+MANUAL_ANGLE_FILE_PATHS: List[str] = [
+    r"F:\Fermactory 2026\RUSHES\JOUR_02\CAM_A\CARTE_01\XDROOT\Clip\A002C002_260425IH.MXF",
+    r"F:\Fermactory 2026\RUSHES\JOUR_02\CAM_B\CARTE_01\XDROOT\Clip\B002C003_2604256E.MXF",
+    r"F:\Fermactory 2026\RUSHES\JOUR_02\CAM_C\CARTE_01\XDROOT\Clip\C002C002_2604258J.MXF",
+    r"F:\Fermactory 2026\RUSHES\JOUR_02\CAM_D\CARTE_01\XDROOT\Clip\D002C002_260425QY.MXF",
+    r"F:\Fermactory 2026\RUSHES\JOUR_02\CAM_E\CARTE_01\XDROOT\Clip\E002C002_260425YI.MXF",
+]
+# Offsets sync par angle (frames), meme taille que MANUAL_ANGLE_FILE_PATHS sinon 0 par defaut.
+MANUAL_ANGLE_SYNC_OFFSETS: List[int] = [-862, -50, -36, -96, -108]
+# Start frame source par angle (frames). Si vide -> 0.
+MANUAL_ANGLE_SOURCE_STARTS: List[int] = [0, 0, 0, 0, 0]
+MANUAL_ANGLE_START_TCS: List[str] = ['18:59:48:19', '18:51:06:07', '04:08:49:03', '20:35:06:11', '20:29:02:09']
+MANUAL_ANGLE_SOURCE_FPS: List[float] = [25.0, 25.0, 25.0, 25.0, 25.0]
+# Reference PGM issue de extract_multicam_angles_from_open_timeline.py
+PGM_REFERENCE_PATH: Optional[str] = r"F:\Fermactory 2026\RUSHES\JOUR_02\PGM\CARTE_01\Capture0001.mov"
+
+PGM_REFERENCE_ITEM_START_OPEN: int = 90000
+PGM_REFERENCE_SOURCE_START_IN_FILE: int = 0
+PGM_REFERENCE_START_TC: str = "02:07:06:07"
+PGM_REFERENCE_SYNC_OFFSET: int = 0
+PGM_REFERENCE_FPS: float = 25.0
+
+
+def log(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except Exception:
+        print(msg)
+
+
+def safe_call(obj: Any, method: str, *args: Any) -> Any:
+    if obj is None:
+        return None
+    fn = getattr(obj, method, None)
+    if fn is None:
+        return None
+    try:
+        return fn(*args)
+    except Exception:
+        return None
+
+
+def to_int(v: Any) -> Optional[int]:
+    try:
+        return int(round(float(v)))
+    except Exception:
+        return None
+
+
+def parse_fps(v: Any) -> Optional[float]:
+    try:
+        return float(str(v).replace(",", "."))
+    except Exception:
+        return None
+
+
+def timecode_to_frames(tc: str, fps: float) -> int:
+    hh, mm, ss, ff = [int(p) for p in tc.split(":")]
+    return int(round(((hh * 3600) + (mm * 60) + ss) * fps + ff))
+
+
+def frames_to_timecode(frames: int, fps: float) -> str:
+    f = max(1, int(round(fps)))
+    hh = frames // (3600 * f)
+    rem = frames % (3600 * f)
+    mm = rem // (60 * f)
+    rem %= (60 * f)
+    ss = rem // f
+    ff = rem % f
+    return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+
+
+def get_resolve() -> Any:
+    try:
+        return bmd.scriptapp("Resolve")  # type: ignore[name-defined]  # noqa: F821
+    except Exception:
+        import DaVinciResolveScript as dvr  # type: ignore
+
+        return dvr.scriptapp("Resolve")
+
+
+def normalize_track_items(items: Any) -> Iterable[Any]:
+    if isinstance(items, dict):
+        return items.values()
+    if isinstance(items, list):
+        return items
+    return []
+
+
+@dataclass
+class Segment:
+    index: int
+    item: Any
+    start: int
+    end: int
+
+
+@dataclass
+class AngleInfo:
+    angle: int
+    file_path: str
+    source_start: int
+    sync_offset: int
+
+
+def debug_methods(obj: Any, title: str) -> None:
+    try:
+        names = sorted(
+            n
+            for n in dir(obj)
+            if any(k in n.lower() for k in ("source", "multi", "angle", "sync"))
+        )
+        log(f"{title} methods (source/multi/angle/sync):")
+        for n in names:
+            log(f"  - {n}")
+    except Exception:
+        pass
+
+
+class FrameCache:
+    def __init__(self) -> None:
+        self.caps: Dict[str, Any] = {}
+
+    def read(self, path: str, frame_idx: int) -> Optional[np.ndarray]:
+        if frame_idx < 0 or not os.path.isfile(path):
+            return None
+        cap = self.caps.get(path)
+        if cap is None:
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                return None
+            self.caps[path] = cap
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
+        if not ok:
+            return None
+        return frame
+
+    def close(self) -> None:
+        for cap in self.caps.values():
+            cap.release()
+        self.caps.clear()
+
+
+def hist_score(a: np.ndarray, b: np.ndarray, size: Tuple[int, int]) -> float:
+    sa = cv2.resize(a, size, interpolation=cv2.INTER_AREA)
+    sb = cv2.resize(b, size, interpolation=cv2.INTER_AREA)
+    ha = cv2.calcHist([cv2.cvtColor(sa, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
+    hb = cv2.calcHist([cv2.cvtColor(sb, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
+    cv2.normalize(ha, ha, 0, 1, cv2.NORM_MINMAX)
+    cv2.normalize(hb, hb, 0, 1, cv2.NORM_MINMAX)
+    return float(cv2.compareHist(ha, hb, cv2.HISTCMP_CORREL))
+
+
+def hist_score_external(
+    pgm_path: str,
+    pgm_frame_idx: int,
+    candidates: List[Tuple[int, str, int]],
+    size: Tuple[int, int],
+    timeline_fps: float,
+) -> Tuple[Optional[int], float]:
+    if not os.path.isfile(HELPER_SCRIPT):
+        log(f"FAIL: helper introuvable: {HELPER_SCRIPT}")
+        return None, -1.0
+    if not os.path.isfile(HELPER_PYTHON):
+        log(f"FAIL: python helper introuvable: {HELPER_PYTHON}")
+        return None, -1.0
+
+    payload = {
+        "pgm_path": pgm_path,
+        "pgm_frame": pgm_frame_idx,
+        "pgm_time_sec": float(pgm_frame_idx) / float(timeline_fps),
+        "timeline_fps": float(timeline_fps),
+        "candidates": [
+            {
+                "angle": a,
+                "path": p,
+                "frame": f,
+                "time_sec": float(f) / float(timeline_fps),
+            }
+            for (a, p, f) in candidates
+        ],
+        "size": [int(size[0]), int(size[1])],
+    }
+    try:
+        proc = subprocess.run(
+            [HELPER_PYTHON, HELPER_SCRIPT],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"FAIL helper execution: {exc!r}")
+        return None, -1.0
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        log(f"FAIL helper returncode={proc.returncode}: {err}")
+        return None, -1.0
+
+    try:
+        out = json.loads(proc.stdout)
+        angle = out.get("best_angle")
+        score = float(out.get("best_score", -1.0))
+        dbg = out.get("debug")
+        if DEBUG_IO:
+            log(
+                f"[DEBUG helper] pgm_frame={pgm_frame_idx} "
+                f"best_angle={angle} best_score={score:.3f}"
+            )
+            if dbg is not None:
+                log(f"[DEBUG helper] details={dbg}")
+        return (int(angle) if angle is not None else None), score
+    except Exception as exc:  # noqa: BLE001
+        log(f"FAIL parse helper output: {exc!r} | stdout={proc.stdout!r}")
+        return None, -1.0
+
+
+def infer_source_start_frame(obj: Any, mp: Any, fps: float) -> int:
+    # IMPORTANT: on veut la position dans le MEDIA SOURCE, pas la position
+    # timeline du clip. GetStartFrame/GetInFrame peuvent representer la
+    # timeline selon le type d'objet et faussent la reference.
+    for m in ("GetSourceStartFrame",):
+        v = safe_call(obj, m)
+        if v is not None:
+            iv = to_int(v)
+            if iv is not None:
+                return iv
+    props = safe_call(mp, "GetClipProperty") or {}
+    tc = props.get("Start TC") or props.get("Start Timecode") or ""
+    return timecode_to_frames(tc, fps) if tc else 0
+
+
+def infer_sync_offset_frames(source_obj: Any) -> int:
+    for m in ("GetSyncOffset", "GetSyncOffsetFrames"):
+        v = safe_call(source_obj, m)
+        iv = to_int(v)
+        if iv is not None:
+            return iv
+    props = safe_call(source_obj, "GetProperty") or {}
+    for k in ("Sync Offset", "SyncOffset", "Sync Offset Frames"):
+        if k in props:
+            iv = to_int(props.get(k))
+            if iv is not None:
+                return iv
+    return 0
+
+
+def main() -> int:
+    log("=== Multicam auto switch (inside Resolve) ===")
+    script_path = globals().get("__file__") or (sys.argv[0] if sys.argv else "<unknown>")
+    log(f"Script file: {script_path}")
+    log(f"MANUAL_ANGLE_FILE_PATHS count: {len(MANUAL_ANGLE_FILE_PATHS)}")
+    anchor_enabled = USE_PGM_REFERENCE_ANCHOR and (PGM_REFERENCE_ITEM_START_OPEN > 0)
+    log(
+        "PGM anchor: "
+        f"enabled={anchor_enabled} "
+        f"path_set={bool(PGM_REFERENCE_PATH)} "
+        f"item_start_open={PGM_REFERENCE_ITEM_START_OPEN} "
+        f"source_start_in_file={PGM_REFERENCE_SOURCE_START_IN_FILE}"
+    )
+    if CV_AVAILABLE:
+        log("Mode comparaison: OpenCV interne Resolve")
+    else:
+        log("Mode comparaison: helper externe (cv2 indisponible en interne)")
+
+    resolve = get_resolve()
+    if not resolve:
+        log("FAIL: impossible d'acceder a Resolve.")
+        return 1
+
+    pm = resolve.GetProjectManager()
+    project = pm.GetCurrentProject() if pm else None
+    timeline = project.GetCurrentTimeline() if project else None
+    if not timeline:
+        log("FAIL: aucune timeline active.")
+        return 1
+
+    fps = parse_fps(safe_call(timeline, "GetSetting", "timelineFrameRate")) or 25.0
+    log(f"Timeline fps={fps}")
+
+    mc_raw = safe_call(timeline, "GetItemsInTrack", "video", MULTICAM_TRACK)
+    mc_items = list(normalize_track_items(mc_raw))
+    if not mc_items:
+        log(f"FAIL: aucun clip sur V{MULTICAM_TRACK}.")
+        return 1
+    multicam = max(mc_items, key=lambda it: (to_int(safe_call(it, "GetEnd")) or 0) - (to_int(safe_call(it, "GetStart")) or 0))
+    mc_start = to_int(safe_call(multicam, "GetStart")) or 0
+    debug_methods(multicam, "TimelineItem multicam")
+
+    pgm_raw = safe_call(timeline, "GetItemsInTrack", "video", PGM_TRACK)
+    pgm_items = sorted(list(normalize_track_items(pgm_raw)), key=lambda it: to_int(safe_call(it, "GetStart")) or 0)
+    segments: List[Segment] = []
+    for i, it in enumerate(pgm_items, 1):
+        s = to_int(safe_call(it, "GetStart"))
+        e = to_int(safe_call(it, "GetEnd"))
+        if s is None or e is None or e <= s:
+            continue
+        if (e - s) < MIN_SEGMENT_FRAMES:
+            continue
+        segments.append(Segment(i, it, s, e))
+    if not segments:
+        log(f"FAIL: aucun segment exploitable sur V{PGM_TRACK}.")
+        return 1
+
+    used_manual = False
+
+    srcs = safe_call(multicam, "GetSourceClips") or safe_call(multicam, "GetMulticamSourceClips") or []
+    if isinstance(srcs, dict):
+        ordered = [srcs[k] for k in sorted(srcs.keys())]
+    else:
+        ordered = list(srcs)
+
+    angles: List[AngleInfo] = []
+    if ordered:
+        for idx, src in enumerate(ordered[:MAX_ANGLES], 1):
+            mp = safe_call(src, "GetMediaPoolItem") or src
+            props = safe_call(mp, "GetClipProperty") or {}
+            fp = (props.get("File Path") or "").strip()
+            if not fp:
+                continue
+            angles.append(
+                AngleInfo(
+                    angle=idx,
+                    file_path=fp,
+                    source_start=infer_source_start_frame(src, mp, fps),
+                    sync_offset=infer_sync_offset_frames(src),
+                )
+            )
+    elif MANUAL_ANGLE_FILE_PATHS:
+        used_manual = True
+        log("SourceClips API indisponible -> fallback MANUAL_ANGLE_FILE_PATHS.")
+        for idx, fp in enumerate(MANUAL_ANGLE_FILE_PATHS[:MAX_ANGLES], 1):
+            sync = MANUAL_ANGLE_SYNC_OFFSETS[idx - 1] if idx - 1 < len(MANUAL_ANGLE_SYNC_OFFSETS) else 0
+            start = MANUAL_ANGLE_SOURCE_STARTS[idx - 1] if idx - 1 < len(MANUAL_ANGLE_SOURCE_STARTS) else 0
+            angles.append(
+                AngleInfo(
+                    angle=idx,
+                    file_path=fp,
+                    source_start=int(start),
+                    sync_offset=int(sync),
+                )
+            )
+    else:
+        log("FAIL: SourceClips multicam non exposes par l'API.")
+        log("Renseigne MANUAL_ANGLE_FILE_PATHS (angle1..N) en haut du script.")
+        return 1
+
+    # Calibration de secours: si des angles donnent des frame indexes negatifs
+    # (donc impossible a lire), on decale individuellement chaque angle pour
+    # rendre frame_idx du 1er segment >= 0.
+    if used_manual and CALIBRATE_MANUAL_OFFSETS and segments:
+        rel0 = segments[0].start - mc_start
+        log(f"[CALIB] rel0(first segment)={rel0}")
+        for ang in angles:
+            src0 = ang.source_start + rel0 + ang.sync_offset
+            if src0 < 0:
+                delta = -src0
+                ang.sync_offset += delta
+                log(
+                    f"[CALIB] angle {ang.angle}: src0 was {src0}, "
+                    f"delta sync_offset={delta} -> new sync_offset={ang.sync_offset}"
+                )
+    if not angles:
+        log("FAIL: aucun angle avec File Path valide.")
+        return 1
+
+    cache = FrameCache() if CV_AVAILABLE else None
+    prev_angle = INITIAL_ANGLE
+    decisions: List[Dict[str, Any]] = []
+    match_extra_offsets: Dict[int, int] = {ang.angle: 0 for ang in angles}
+    if AUTO_MATCH_CALIBRATE_TO_PGM_START and segments:
+        rel0 = segments[0].start - mc_start
+        anchor_shift0 = (PGM_REFERENCE_ITEM_START_OPEN - mc_start) if anchor_enabled else 0
+        log(f"[MATCH-CALIB] rel0={rel0} anchor_shift={anchor_shift0}")
+        for ang in angles:
+            src0 = ang.source_start + rel0 + anchor_shift0 + ang.sync_offset
+            if src0 < 0:
+                match_extra_offsets[ang.angle] = -src0
+                log(
+                    f"[MATCH-CALIB] angle {ang.angle}: src0={src0} -> "
+                    f"extra={match_extra_offsets[ang.angle]}"
+                )
+    try:
+        for seg in segments:
+            seg_tc = frames_to_timecode(seg.start, fps)
+            pgm_mp = safe_call(seg.item, "GetMediaPoolItem")
+            pgm_props = safe_call(pgm_mp, "GetClipProperty") or {}
+            pgm_fp = (pgm_props.get("File Path") or "").strip()
+            if not pgm_fp:
+                log(f"[WARN] Segment {seg.index} {seg_tc}: File Path PGM manquant.")
+                continue
+            if DEBUG_IO and not os.path.isfile(pgm_fp):
+                log(f"[DEBUG] PGM file not found: {pgm_fp}")
+
+            left_offset = to_int(safe_call(seg.item, "GetLeftOffset")) or 0
+            pgm_src_start = infer_source_start_frame(seg.item, pgm_mp, fps)
+            # IMPORTANT:
+            # Dans cette timeline de cuts, left_offset correspond a la position
+            # source PGM reelle du segment (ex: segment1 -> 8134).
+            # Ajouter pgm_src_start ici double la reference et cree un decalage.
+            pgm_frame_idx = left_offset
+            rel = seg.start - mc_start
+
+            # Ancrage PGM: rel=0 correspond au "debut de decision timeline".
+            # On le mappe vers la reference PGM de la timeline multicam ouverte.
+            if anchor_enabled and PGM_REFERENCE_PATH:
+                pgm_fp = PGM_REFERENCE_PATH
+                # On derive rel depuis la position source PGM du segment,
+                # pour garder un mapping strictement base source TC/frame.
+                rel = pgm_frame_idx - PGM_REFERENCE_SOURCE_START_IN_FILE
+            if DEBUG_IO:
+                log(
+                    f"[DEBUG] Segment {seg.index} {seg_tc}: "
+                    f"pgm_src_start={pgm_src_start} left_offset={left_offset} "
+                    f"rel={rel} pgm_frame_idx={pgm_frame_idx}"
+                )
+            best_angle = None
+            best_score = -1.0
+            anchor_shift = PGM_REFERENCE_ITEM_START_OPEN - mc_start
+            if CV_AVAILABLE:
+                pgm_frame = cache.read(pgm_fp, pgm_frame_idx) if cache else None
+                if pgm_frame is None:
+                    log(f"[WARN] Segment {seg.index} {seg_tc}: impossible lire frame PGM.")
+                    continue
+                for ang in angles:
+                    if SYNC_MODE == "timecode":
+                        src_frame_idx = seg.start + ang.sync_offset
+                    else:
+                        if anchor_enabled:
+                            # Decale rel pour qu'il corresponde a la meme origine que
+                            # la timeline multicam ouverte (reference PGM).
+                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
+                        else:
+                            src_frame_idx = ang.source_start + rel + ang.sync_offset
+                    src_frame_idx += match_extra_offsets.get(ang.angle, 0)
+                    src_frame = cache.read(ang.file_path, src_frame_idx) if cache else None
+                    if src_frame is None:
+                        continue
+                    score = hist_score(pgm_frame, src_frame, DOWNSCALE_SIZE)
+                    if score > best_score:
+                        best_score = score
+                        best_angle = ang.angle
+            else:
+                candidates: List[Tuple[int, str, int]] = []
+                for ang in angles:
+                    if SYNC_MODE == "timecode":
+                        src_frame_idx = seg.start + ang.sync_offset
+                    else:
+                        if anchor_enabled:
+                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
+                        else:
+                            src_frame_idx = ang.source_start + rel + ang.sync_offset
+                    src_frame_idx += match_extra_offsets.get(ang.angle, 0)
+                    candidates.append((ang.angle, ang.file_path, src_frame_idx))
+                if DEBUG_IO:
+                    for a, p, fidx in candidates:
+                        log(
+                            f"[DEBUG] candidate angle={a} frame={fidx} "
+                            f"exists={os.path.isfile(p)} path={p}"
+                        )
+                best_angle, best_score = hist_score_external(
+                    pgm_path=pgm_fp,
+                    pgm_frame_idx=pgm_frame_idx,
+                    candidates=candidates,
+                    size=DOWNSCALE_SIZE,
+                    timeline_fps=fps,
+                )
+
+            if best_angle is None:
+                decisions.append(
+                    {
+                        "segment_index": seg.index,
+                        "start_frame": int(seg.start),
+                        "end_frame": int(seg.end),
+                        "start_tc": seg_tc,
+                        "pgm_frame_idx": int(pgm_frame_idx),
+                        "best_angle": None,
+                        "best_score": float(best_score),
+                        "final_angle": int(prev_angle),
+                        "reason": "no_candidate",
+                    }
+                )
+                safe_call(
+                    timeline,
+                    "AddMarker",
+                    seg.start,
+                    MARKER_COLOR,
+                    "LOW_CONF_SWITCH",
+                    f"No candidate at {seg_tc}; kept angle {prev_angle}",
+                    1,
+                )
+                log(f"[LOW] Segment {seg.index} {seg_tc}: score={best_score:.3f}, keep angle {prev_angle}")
+                continue
+
+            if best_score < CONFIDENCE_THRESHOLD:
+                chosen_angle = best_angle if USE_BEST_ANGLE_WHEN_LOW else prev_angle
+                safe_call(
+                    timeline,
+                    "AddMarker",
+                    seg.start,
+                    MARKER_COLOR,
+                    "LOW_CONF_SWITCH",
+                    f"Low confidence at {seg_tc}; best={best_angle} score={best_score:.3f}; chosen={chosen_angle}",
+                    1,
+                )
+                log(
+                    f"[LOW] Segment {seg.index} {seg_tc}: score={best_score:.3f}, "
+                    f"best={best_angle}, chosen={chosen_angle}"
+                )
+                best_angle = chosen_angle
+
+            final_angle = int(best_angle)
+            decisions.append(
+                {
+                    "segment_index": seg.index,
+                    "start_frame": int(seg.start),
+                    "end_frame": int(seg.end),
+                    "start_tc": seg_tc,
+                    "pgm_frame_idx": int(pgm_frame_idx),
+                    "best_angle": int(best_angle),
+                    "best_score": float(best_score),
+                    "final_angle": final_angle,
+                    "reason": "best_or_low",
+                }
+            )
+
+            if APPLY_MULTICAM:
+                ok = safe_call(multicam, "SetMulticamAngle", final_angle, seg.start)
+                if ok:
+                    prev_angle = final_angle
+                    log(f"[OK] Segment {seg.index} {seg_tc} -> angle {final_angle} score {best_score:.3f}")
+                else:
+                    log(f"[WARN] Segment {seg.index} {seg_tc}: SetMulticamAngle echec.")
+            else:
+                prev_angle = final_angle
+                log(f"[DECISION] Segment {seg.index} {seg_tc} -> angle {final_angle} score {best_score:.3f}")
+    finally:
+        if cache:
+            cache.close()
+
+    if EXPORT_DECISIONS_JSON:
+        script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
+        out_json = os.path.join(script_dir, DECISIONS_JSON_NAME)
+        match_extra_offsets_list = [int(match_extra_offsets.get(i + 1, 0)) for i in range(len(MANUAL_ANGLE_FILE_PATHS))]
+        payload: Dict[str, Any] = {
+            "fps": fps,
+            "pgm_track": PGM_TRACK,
+            "multicam_track": MULTICAM_TRACK,
+            "pgm_file_path": PGM_REFERENCE_PATH or "",
+            "pgm_reference_item_start_open": PGM_REFERENCE_ITEM_START_OPEN,
+            "pgm_reference_source_start_in_file": PGM_REFERENCE_SOURCE_START_IN_FILE,
+            "manual_angle_file_paths": MANUAL_ANGLE_FILE_PATHS,
+            "manual_angle_sync_offsets": MANUAL_ANGLE_SYNC_OFFSETS,
+            "manual_angle_match_extra_offsets": match_extra_offsets_list,
+            "manual_angle_source_starts": MANUAL_ANGLE_SOURCE_STARTS,
+            "manual_angle_start_tcs": MANUAL_ANGLE_START_TCS,
+            "manual_angle_source_fps": MANUAL_ANGLE_SOURCE_FPS,
+            "pgm_reference_start_tc": PGM_REFERENCE_START_TC,
+            "pgm_reference_sync_offset": PGM_REFERENCE_SYNC_OFFSET,
+            "pgm_reference_fps": PGM_REFERENCE_FPS,
+            "confidence_threshold": CONFIDENCE_THRESHOLD,
+            "decisions": decisions,
+        }
+        with open(out_json, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        log(f"[EXPORT] {len(decisions)} decisions -> {out_json}")
+
+    log("Termine.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

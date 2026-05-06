@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Set
 
@@ -69,9 +70,7 @@ def config_json_candidates(script_path: str, project: Any) -> List[str]:
     if cache_dir:
         candidates.append(os.path.join(cache_dir, OUTPUT_JSON_NAME))
     candidates.append(os.path.join(script_dir, OUTPUT_JSON_NAME))
-    localappdata = (os.getenv("LOCALAPPDATA") or "").strip()
-    if localappdata:
-        candidates.append(os.path.join(localappdata, "Temp", OUTPUT_JSON_NAME))
+    candidates.append(os.path.join(tempfile.gettempdir(), OUTPUT_JSON_NAME))
     return candidates
 
 

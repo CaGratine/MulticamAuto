@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import json
+import tempfile
 import subprocess
 import sys
 import time
@@ -44,7 +45,7 @@ USE_EXTRACTED_CONFIG_JSON = True
 EXTRACTED_CONFIG_JSON_NAME = "multicam_extracted_config.json"
 REQUIRE_FRESH_EXTRACTED_CONFIG_JSON = True
 EXTRACTED_CONFIG_MAX_AGE_MINUTES = 30
-FCPXML_GENERATOR_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\generate_multicam_fcpxml_from_decisions.py"
+FCPXML_GENERATOR_SCRIPT_NAME = "generate_multicam_fcpxml_from_decisions.py"
 GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
 FCPXML_START_TC = "00:00:00:00"
@@ -62,10 +63,13 @@ CALIBRATE_MANUAL_OFFSETS = False  # decale sync_offset pour empecher frame_idx n
 # C'est le mode recommande quand la timeline "decision" est construite a partir du PGM.
 USE_PGM_REFERENCE_ANCHOR = True
 # Fallback externe si cv2/numpy indisponibles dans Python Resolve.
-# Mettre le chemin Python qui a opencv-python installe (chez toi: Python 3.14).
-HELPER_PYTHON = r"C:\Python314\python.exe"
-# Chemin du helper (a copier aussi dans le dossier Scripts Resolve ou adapter).
-HELPER_SCRIPT = r"D:\Users\Emile Cervia\Documents\Boite_a_idees\PgmFromSources\cv_hist_compare_helper.py"
+# Si vide, auto-detection: env MULTICAM_HELPER_PYTHON -> sys.executable.
+HELPER_PYTHON_OVERRIDE = ""
+# Sous-dossier optionnel contenant les scripts utilitaires (relatif au script principal).
+# Exemple: "helpers" ou "tools". Laisser "" pour dossier principal.
+TOOLS_SUBDIR = "helpers"
+# Nom du helper (resolu automatiquement a cote du script principal).
+HELPER_SCRIPT_NAME = "cv_hist_compare_helper.py"
 # Fallback manuel si l'API n'expose pas les SourceClips multicam.
 # Renseigner 5 paths (angle 1..5) si necessaire.
 MANUAL_ANGLE_FILE_PATHS: List[str] = [
@@ -135,6 +139,41 @@ def make_fcpxml_name_from_clip_name(clip_name: str) -> str:
     return f"{stem} Auto.fcpxml"
 
 
+def runtime_script_dir() -> str:
+    script_path = str(globals().get("__file__") or (sys.argv[0] if sys.argv else ""))
+    if script_path:
+        return os.path.dirname(os.path.abspath(script_path))
+    return os.getcwd()
+
+
+def resolve_local_script_path(script_name: str) -> str:
+    base_dir = runtime_script_dir()
+    env_tools_dir = (os.getenv("MULTICAM_TOOLS_DIR") or "").strip()
+    candidates: List[str] = []
+    if env_tools_dir:
+        candidates.append(os.path.join(env_tools_dir, script_name))
+    if TOOLS_SUBDIR.strip():
+        candidates.append(os.path.join(base_dir, TOOLS_SUBDIR.strip(), script_name))
+    candidates.append(os.path.join(base_dir, script_name))
+    # Fallback utile quand le script est lance depuis un autre dossier Scripts Resolve.
+    candidates.append(os.path.join(os.getcwd(), script_name))
+    if TOOLS_SUBDIR.strip():
+        candidates.append(os.path.join(os.getcwd(), TOOLS_SUBDIR.strip(), script_name))
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return candidates[0]
+
+
+def resolve_helper_python() -> str:
+    env_py = (os.getenv("MULTICAM_HELPER_PYTHON") or "").strip()
+    if env_py:
+        return env_py
+    if HELPER_PYTHON_OVERRIDE.strip():
+        return HELPER_PYTHON_OVERRIDE.strip()
+    return sys.executable
+
+
 def get_project_cache_dir(project: Any) -> Optional[str]:
     for key in ("perfCacheClipsLocation", "cacheFileLocation", "CacheFileLocation", "CacheClipLocation"):
         p = safe_call(project, "GetSetting", key) if project else None
@@ -158,10 +197,32 @@ def config_json_candidates(script_path: str, project: Any) -> List[str]:
     if cache_dir:
         candidates.append(os.path.join(cache_dir, EXTRACTED_CONFIG_JSON_NAME))
     candidates.append(os.path.join(script_dir, EXTRACTED_CONFIG_JSON_NAME))
-    localappdata = (os.getenv("LOCALAPPDATA") or "").strip()
-    if localappdata:
-        candidates.append(os.path.join(localappdata, "Temp", EXTRACTED_CONFIG_JSON_NAME))
+    candidates.append(os.path.join(tempfile.gettempdir(), EXTRACTED_CONFIG_JSON_NAME))
     return candidates
+
+
+def is_writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_path = os.path.join(path, ".write_test_tmp")
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test_path)
+        return True
+    except Exception:
+        return False
+
+
+def choose_export_dir(project: Any, script_dir: str) -> str:
+    cache_dir = get_project_cache_dir(project)
+    candidates: List[str] = []
+    if cache_dir:
+        candidates.append(cache_dir)
+    candidates.append(script_dir)
+    for d in candidates:
+        if d and is_writable_dir(d):
+            return d
+    return script_dir
 
 
 def timecode_to_frames(tc: str, fps: float) -> int:
@@ -277,11 +338,13 @@ def hist_score_external(
     size: Tuple[int, int],
     timeline_fps: float,
 ) -> Tuple[Optional[int], float]:
-    if not os.path.isfile(HELPER_SCRIPT):
-        log(f"FAIL: helper introuvable: {HELPER_SCRIPT}")
+    helper_script = resolve_local_script_path(HELPER_SCRIPT_NAME)
+    helper_python = resolve_helper_python()
+    if not os.path.isfile(helper_script):
+        log(f"FAIL: helper introuvable: {helper_script}")
         return None, -1.0
-    if not os.path.isfile(HELPER_PYTHON):
-        log(f"FAIL: python helper introuvable: {HELPER_PYTHON}")
+    if not os.path.isfile(helper_python):
+        log(f"FAIL: python helper introuvable: {helper_python}")
         return None, -1.0
 
     payload = {
@@ -311,7 +374,7 @@ def hist_score_external(
             # Evite l'ouverture d'une fenetre console par segment sous Windows.
             run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         proc = subprocess.run(
-            [HELPER_PYTHON, HELPER_SCRIPT],
+            [helper_python, helper_script],
             **run_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
@@ -342,17 +405,19 @@ def hist_score_external(
 
 
 def run_generate_fcpxml(decisions_json: str, output_fcpxml: str, timeline_name: Optional[str] = None) -> bool:
-    if not os.path.isfile(FCPXML_GENERATOR_SCRIPT):
-        log(f"FAIL: generateur FCPXML introuvable: {FCPXML_GENERATOR_SCRIPT}")
+    generator_script = resolve_local_script_path(FCPXML_GENERATOR_SCRIPT_NAME)
+    helper_python = resolve_helper_python()
+    if not os.path.isfile(generator_script):
+        log(f"FAIL: generateur FCPXML introuvable: {generator_script}")
         return False
-    if not os.path.isfile(HELPER_PYTHON):
-        log(f"FAIL: python introuvable pour generateur FCPXML: {HELPER_PYTHON}")
+    if not os.path.isfile(helper_python):
+        log(f"FAIL: python introuvable pour generateur FCPXML: {helper_python}")
         return False
 
     effective_timeline_name = (timeline_name or "").strip() or FCPXML_TIMELINE_NAME
     cmd = [
-        HELPER_PYTHON,
-        FCPXML_GENERATOR_SCRIPT,
+        helper_python,
+        generator_script,
         "--decisions-json",
         decisions_json,
         "--output-fcpxml",
@@ -897,11 +962,12 @@ def main() -> int:
             cache.close()
 
     if EXPORT_DECISIONS_JSON:
-        out_json = os.path.join(script_dir, DECISIONS_JSON_NAME)
+        export_dir = choose_export_dir(project, script_dir)
+        out_json = os.path.join(export_dir, DECISIONS_JSON_NAME)
         fcpxml_name = GENERATED_FCPXML_NAME
         if selected_pgm_name_for_export:
             fcpxml_name = make_fcpxml_name_from_clip_name(selected_pgm_name_for_export)
-        out_fcpxml = os.path.join(script_dir, fcpxml_name)
+        out_fcpxml = os.path.join(export_dir, fcpxml_name)
         match_extra_offsets_list = [int(match_extra_offsets.get(i + 1, 0)) for i in range(len(MANUAL_ANGLE_FILE_PATHS))]
         payload: Dict[str, Any] = {
             "fps": fps,

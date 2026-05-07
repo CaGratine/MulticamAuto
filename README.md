@@ -1,6 +1,6 @@
 # Auto Multicam From PGM (Resolve)
 
-Scripts pour automatiser un remontage multicam à partir d'un PGM dans DaVinci Resolve.
+Scripts pour automatiser un remontage multicam à partir des rushes natifs en suivant un PGM dans DaVinci Resolve.
 
 ## Principe
 

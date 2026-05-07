@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import os
 import json
+import glob
+import shutil
 import tempfile
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+SCRIPT_VERSION = "2026-05-06-01"
 
 try:
     import cv2  # type: ignore
@@ -58,7 +62,14 @@ INITIAL_ANGLE = 1
 MARKER_COLOR = "Yellow"
 DOWNSCALE_SIZE = (160, 90)
 DEBUG_IO = True
+FORCE_EXTERNAL_HELPER_MATCHING = True
 CALIBRATE_MANUAL_OFFSETS = False  # decale sync_offset pour empecher frame_idx negatif
+# Mapping frame PGM source:
+# - "left-offset": utilise uniquement GetLeftOffset()
+# - "source-plus-left-offset": utilise GetSourceStartFrame() + GetLeftOffset()
+# NOTE: pour une timeline issue de DetectSceneCuts sur le PGM, left_offset
+# correspond deja a la frame source PGM (ex: premier segment -> 8134).
+PGM_FRAME_INDEX_MODE = "left-offset"
 # Si True, on ancre les calculs sur la reference PGM extraite du multicam ouvert.
 # C'est le mode recommande quand la timeline "decision" est construite a partir du PGM.
 USE_PGM_REFERENCE_ANCHOR = True
@@ -167,11 +178,76 @@ def resolve_local_script_path(script_name: str) -> str:
 
 def resolve_helper_python() -> str:
     env_py = (os.getenv("MULTICAM_HELPER_PYTHON") or "").strip()
-    if env_py:
+    if env_py and os.path.isfile(env_py):
         return env_py
-    if HELPER_PYTHON_OVERRIDE.strip():
+    if HELPER_PYTHON_OVERRIDE.strip() and os.path.isfile(HELPER_PYTHON_OVERRIDE.strip()):
         return HELPER_PYTHON_OVERRIDE.strip()
+
+    candidates: List[str] = []
+    if sys.executable:
+        candidates.append(sys.executable)
+    for cmd in ("python3", "python", "py"):
+        p = shutil.which(cmd)
+        if p:
+            candidates.append(p)
+    if os.name == "nt":
+        candidates.extend(sorted(glob.glob(r"C:\Python*\python.exe")))
+        localapp = os.getenv("LOCALAPPDATA") or ""
+        if localapp:
+            candidates.extend(
+                sorted(glob.glob(os.path.join(localapp, "Programs", "Python", "Python*", "python.exe")))
+            )
+
+    def _is_bad_candidate(path: str) -> bool:
+        low = path.lower()
+        if "davinci resolve" in low or ("fusionscript" in low and low.endswith(".exe")):
+            return True
+        if "windowsapps" in low and low.endswith("python.exe"):
+            return True
+        return False
+
+    seen: set[str] = set()
+    for c in candidates:
+        if not c:
+            continue
+        key = os.path.normcase(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not os.path.isfile(c) or _is_bad_candidate(c):
+            continue
+        try:
+            probe = subprocess.run(
+                [c, "-c", "import sys; print(sys.version_info[0])"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            if probe.returncode == 0 and (probe.stdout or "").strip().startswith(("3", "2")):
+                return c
+        except Exception:
+            continue
     return sys.executable
+
+
+def parse_helper_json(stdout_text: str) -> Optional[Dict[str, Any]]:
+    raw = (stdout_text or "").strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    for line in reversed([ln.strip() for ln in raw.splitlines() if ln.strip()]):
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                obj = json.loads(line)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                continue
+    return None
 
 
 def get_project_cache_dir(project: Any) -> Optional[str]:
@@ -387,7 +463,9 @@ def hist_score_external(
         return None, -1.0
 
     try:
-        out = json.loads(proc.stdout)
+        out = parse_helper_json(proc.stdout)
+        if not out:
+            raise ValueError("helper stdout sans JSON exploitable")
         angle = out.get("best_angle")
         score = float(out.get("best_score", -1.0))
         dbg = out.get("debug")
@@ -607,6 +685,7 @@ def apply_extracted_config_json(config_path: str) -> bool:
 
 def main() -> int:
     log("=== Multicam auto switch (inside Resolve) ===")
+    log(f"[VERSION] {SCRIPT_VERSION} | pid={os.getpid()}")
     script_path = globals().get("__file__") or (sys.argv[0] if sys.argv else "<unknown>")
     script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path != "<unknown>" else os.getcwd()
     log(f"Script file: {script_path}")
@@ -654,8 +733,10 @@ def main() -> int:
         f"item_start_open={PGM_REFERENCE_ITEM_START_OPEN} "
         f"source_start_in_file={PGM_REFERENCE_SOURCE_START_IN_FILE}"
     )
-    if CV_AVAILABLE:
-        log("Mode comparaison: OpenCV interne Resolve")
+    if FORCE_EXTERNAL_HELPER_MATCHING:
+        log("Mode comparaison: helper externe (force, score combine)")
+    elif CV_AVAILABLE:
+        log("Mode comparaison: OpenCV interne Resolve (histogramme seul)")
     else:
         log("Mode comparaison: helper externe (cv2 indisponible en interne)")
     timeline = None
@@ -771,7 +852,8 @@ def main() -> int:
         log("FAIL: aucun angle avec File Path valide.")
         return 1
 
-    cache = FrameCache() if CV_AVAILABLE else None
+    use_internal_cv = (not FORCE_EXTERNAL_HELPER_MATCHING) and CV_AVAILABLE
+    cache = FrameCache() if use_internal_cv else None
     prev_angle = INITIAL_ANGLE
     decisions: List[Dict[str, Any]] = []
     total_segments = len(segments)
@@ -813,11 +895,10 @@ def main() -> int:
 
             left_offset = to_int(safe_call(seg.item, "GetLeftOffset")) or 0
             pgm_src_start = infer_source_start_frame(seg.item, pgm_mp, fps)
-            # IMPORTANT:
-            # Dans cette timeline de cuts, left_offset correspond a la position
-            # source PGM reelle du segment (ex: segment1 -> 8134).
-            # Ajouter pgm_src_start ici double la reference et cree un decalage.
-            pgm_frame_idx = left_offset
+            if PGM_FRAME_INDEX_MODE == "left-offset":
+                pgm_frame_idx = left_offset
+            else:
+                pgm_frame_idx = pgm_src_start + left_offset
             rel = seg.start - mc_start
 
             # Ancrage PGM: rel=0 correspond au "debut de decision timeline".
@@ -830,13 +911,14 @@ def main() -> int:
             if DEBUG_IO:
                 log(
                     f"[DEBUG] Segment {seg.index} {seg_tc}: "
+                    f"mode={PGM_FRAME_INDEX_MODE} "
                     f"pgm_src_start={pgm_src_start} left_offset={left_offset} "
                     f"rel={rel} pgm_frame_idx={pgm_frame_idx}"
                 )
             best_angle = None
             best_score = -1.0
             anchor_shift = PGM_REFERENCE_ITEM_START_OPEN - mc_start
-            if CV_AVAILABLE:
+            if use_internal_cv:
                 pgm_frame = cache.read(pgm_fp, pgm_frame_idx) if cache else None
                 if pgm_frame is None:
                     log(f"[WARN] Segment {seg.index} {seg_tc}: impossible lire frame PGM.")

@@ -80,6 +80,13 @@ MANUAL_ANGLE_SYNC_OFFSETS: List[int] = [-862, -50, -36, -96, -108]
 MANUAL_ANGLE_SOURCE_STARTS: List[int] = [0, 0, 0, 0, 0]
 MANUAL_ANGLE_START_TCS: List[str] = ['18:59:48:19', '18:51:06:07', '04:08:49:03', '20:35:06:11', '20:29:02:09']
 MANUAL_ANGLE_SOURCE_FPS: List[float] = [25.0, 25.0, 25.0, 25.0, 25.0]
+# Mapping avance (optionnel) pour gerer plusieurs fichiers par angle.
+# Structure attendue (chargee depuis multicam_extracted_config.json):
+# {
+#   "1": [{"file_path": "...", "item_start_open": 123, "item_end_open": 456, "source_start_in_file": 789}, ...],
+#   "2": [...]
+# }
+ANGLE_SOURCE_CLIPS_MAP: Dict[str, List[Dict[str, Any]]] = {}
 # Reference PGM issue de extract_multicam_angles_from_open_timeline.py
 PGM_REFERENCE_PATH: Optional[str] = r"F:\Fermactory 2026\RUSHES\JOUR_02\PGM\CARTE_01\Capture0001.mov"
 
@@ -342,6 +349,16 @@ class AngleInfo:
     sync_offset: int
 
 
+@dataclass
+class AngleSourceClip:
+    file_path: str
+    item_start_open: int
+    item_end_open: int
+    source_start_in_file: int
+    start_tc: str = "00:00:00:00"
+    fps: float = 25.0
+
+
 def debug_methods(obj: Any, title: str) -> None:
     try:
         names = sorted(
@@ -585,6 +602,7 @@ def apply_extracted_config_json(config_path: str) -> bool:
     global MANUAL_ANGLE_SOURCE_STARTS
     global MANUAL_ANGLE_START_TCS
     global MANUAL_ANGLE_SOURCE_FPS
+    global ANGLE_SOURCE_CLIPS_MAP
     global PGM_REFERENCE_PATH
     global PGM_REFERENCE_ITEM_START_OPEN
     global PGM_REFERENCE_SOURCE_START_IN_FILE
@@ -616,6 +634,38 @@ def apply_extracted_config_json(config_path: str) -> bool:
     source_fps = data.get("manual_angle_source_fps")
     if isinstance(source_fps, list):
         MANUAL_ANGLE_SOURCE_FPS = [parse_fps(x) or 25.0 for x in source_fps]
+    angle_clips_map = data.get("angle_source_clips_map")
+    if isinstance(angle_clips_map, dict):
+        normalized_map: Dict[str, List[Dict[str, Any]]] = {}
+        for k, rows in angle_clips_map.items():
+            if not isinstance(rows, list):
+                continue
+            out_rows: List[Dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                fp = str(row.get("file_path") or "").strip()
+                s = to_int(row.get("item_start_open"))
+                e = to_int(row.get("item_end_open"))
+                src = to_int(row.get("source_start_in_file"))
+                start_tc = str(row.get("start_tc") or "00:00:00:00").strip()
+                clip_fps = parse_fps(row.get("fps")) or 25.0
+                if not fp or s is None or e is None or src is None or e <= s:
+                    continue
+                out_rows.append(
+                    {
+                        "file_path": fp,
+                        "item_start_open": int(s),
+                        "item_end_open": int(e),
+                        "source_start_in_file": int(src),
+                        "start_tc": start_tc,
+                        "fps": float(clip_fps),
+                    }
+                )
+            if out_rows:
+                out_rows.sort(key=lambda it: int(it["item_start_open"]))
+                normalized_map[str(k)] = out_rows
+        ANGLE_SOURCE_CLIPS_MAP = normalized_map
 
     pgm_ref_path = data.get("pgm_reference_path")
     if pgm_ref_path is None or str(pgm_ref_path).strip():
@@ -629,7 +679,59 @@ def apply_extracted_config_json(config_path: str) -> bool:
     log(f"[CONFIG] JSON charge: {config_path}")
     log(f"[CONFIG] generated_from_timeline={data.get('generated_from_timeline')}")
     log(f"[CONFIG] angles charges={len(MANUAL_ANGLE_FILE_PATHS)}")
+    if ANGLE_SOURCE_CLIPS_MAP:
+        total = sum(len(v) for v in ANGLE_SOURCE_CLIPS_MAP.values())
+        log(f"[CONFIG] angle_source_clips_map charge: angles={len(ANGLE_SOURCE_CLIPS_MAP)} clips={total}")
     return True
+
+
+def parse_angle_source_clips() -> Dict[int, List[AngleSourceClip]]:
+    out: Dict[int, List[AngleSourceClip]] = {}
+    for k, rows in ANGLE_SOURCE_CLIPS_MAP.items():
+        angle = to_int(k)
+        if angle is None or angle <= 0 or not isinstance(rows, list):
+            continue
+        clips: List[AngleSourceClip] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            fp = str(row.get("file_path") or "").strip()
+            s = to_int(row.get("item_start_open"))
+            e = to_int(row.get("item_end_open"))
+            src = to_int(row.get("source_start_in_file"))
+            start_tc = str(row.get("start_tc") or "00:00:00:00").strip()
+            clip_fps = parse_fps(row.get("fps")) or 25.0
+            if not fp or s is None or e is None or src is None or e <= s:
+                continue
+            clips.append(
+                AngleSourceClip(
+                    file_path=fp,
+                    item_start_open=int(s),
+                    item_end_open=int(e),
+                    source_start_in_file=int(src),
+                    start_tc=start_tc,
+                    fps=float(clip_fps),
+                )
+            )
+        if clips:
+            clips.sort(key=lambda it: it.item_start_open)
+            out[int(angle)] = clips
+    return out
+
+
+def resolve_src_from_open_frame(clips: List[AngleSourceClip], target_open_frame: int) -> Optional[Tuple[str, int]]:
+    if not clips:
+        return None
+    for clip in clips:
+        if clip.item_start_open <= target_open_frame < clip.item_end_open:
+            return clip.file_path, clip.source_start_in_file + (target_open_frame - clip.item_start_open)
+    # Fallback: clip le plus proche si hors plage.
+    nearest = min(
+        clips,
+        key=lambda c: min(abs(target_open_frame - c.item_start_open), abs(target_open_frame - (c.item_end_open - 1))),
+    )
+    frame_in_file = nearest.source_start_in_file + (target_open_frame - nearest.item_start_open)
+    return nearest.file_path, frame_in_file
 
 
 def main() -> int:
@@ -674,6 +776,7 @@ def main() -> int:
                     return 1
                 log(f"[CONFIG] JSON non chargeable, fallback valeurs en dur: {cfg_path}")
     log(f"MANUAL_ANGLE_FILE_PATHS count: {len(MANUAL_ANGLE_FILE_PATHS)}")
+    angle_source_clips = parse_angle_source_clips()
     anchor_enabled = USE_PGM_REFERENCE_ANCHOR and (PGM_REFERENCE_ITEM_START_OPEN > 0)
     log(
         "PGM anchor: "
@@ -683,6 +786,9 @@ def main() -> int:
         f"source_start_in_file={PGM_REFERENCE_SOURCE_START_IN_FILE}"
     )
     log("Comparaison: helper externe (score combine)")
+    if angle_source_clips:
+        total_clips = sum(len(v) for v in angle_source_clips.values())
+        log(f"[SYNC] multi-fichiers actif: angles={len(angle_source_clips)} clips={total_clips}")
     timeline = None
     selected_pgm_name_for_export: Optional[str] = None
     if project and AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM:
@@ -858,17 +964,25 @@ def main() -> int:
             best_angle = None
             best_score = -1.0
             anchor_shift = PGM_REFERENCE_ITEM_START_OPEN - mc_start
+            target_open_frame = PGM_REFERENCE_ITEM_START_OPEN + rel if anchor_enabled else None
             candidates: List[Tuple[int, str, int]] = []
             for ang in angles:
-                if SYNC_MODE == "timecode":
-                    src_frame_idx = seg.start + ang.sync_offset
+                multi = None
+                if target_open_frame is not None and ang.angle in angle_source_clips:
+                    multi = resolve_src_from_open_frame(angle_source_clips[ang.angle], target_open_frame)
+                if multi is not None:
+                    src_path, src_frame_idx = multi
                 else:
-                    if anchor_enabled:
-                        src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
+                    src_path = ang.file_path
+                    if SYNC_MODE == "timecode":
+                        src_frame_idx = seg.start + ang.sync_offset
                     else:
-                        src_frame_idx = ang.source_start + rel + ang.sync_offset
+                        if anchor_enabled:
+                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
+                        else:
+                            src_frame_idx = ang.source_start + rel + ang.sync_offset
                 src_frame_idx += match_extra_offsets.get(ang.angle, 0)
-                candidates.append((ang.angle, ang.file_path, src_frame_idx))
+                candidates.append((ang.angle, src_path, src_frame_idx))
             if DEBUG_IO:
                 for a, p, fidx in candidates:
                     log(
@@ -979,6 +1093,7 @@ def main() -> int:
             "manual_angle_source_starts": MANUAL_ANGLE_SOURCE_STARTS,
             "manual_angle_start_tcs": MANUAL_ANGLE_START_TCS,
             "manual_angle_source_fps": MANUAL_ANGLE_SOURCE_FPS,
+            "angle_source_clips_map": ANGLE_SOURCE_CLIPS_MAP,
             "pgm_reference_start_tc": PGM_REFERENCE_START_TC,
             "pgm_reference_sync_offset": PGM_REFERENCE_SYNC_OFFSET,
             "pgm_reference_fps": PGM_REFERENCE_FPS,

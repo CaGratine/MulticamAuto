@@ -209,6 +209,7 @@ def main() -> int:
     source_starts: List[int] = []
     source_start_tcs: List[str] = []
     source_fps: List[float] = []
+    angle_source_clips_map: Dict[str, List[Dict[str, Any]]] = {}
     pgm_ref: Optional[Dict[str, Any]] = None
 
     # PASS 1: trouver la reference PGM.
@@ -278,11 +279,43 @@ def main() -> int:
         sync = mc_start_open - item_start_open
 
         if len(file_paths) < MAX_ANGLES_TO_EXTRACT:
+            angle_idx = len(file_paths) + 1
             file_paths.append(fp)
             sync_offsets.append(sync)
             source_starts.append(source_start_in_file)
             source_start_tcs.append(start_tc)
             source_fps.append(clip_fps)
+
+            clips_for_angle: List[Dict[str, Any]] = []
+            for it in items:
+                mp_it = safe_call(it, "GetMediaPoolItem")
+                props_it = safe_call(mp_it, "GetClipProperty") if mp_it else {}
+                props_it = props_it or {}
+                fp_it = (props_it.get("File Path") or "").strip()
+                if not fp_it:
+                    continue
+                ext_it = os.path.splitext(fp_it)[1].lower()
+                if KEEP_EXTS and ext_it not in KEEP_EXTS:
+                    continue
+                s_it = to_int(safe_call(it, "GetStart"), 0)
+                e_it = to_int(safe_call(it, "GetEnd"), s_it)
+                src_it = to_int(safe_call(it, "GetSourceStartFrame"), 0)
+                start_tc_it = str(props_it.get("Start TC") or props_it.get("Start Timecode") or "00:00:00:00").strip()
+                fps_it = infer_clip_fps(props_it, timeline_fps)
+                if e_it <= s_it:
+                    continue
+                clips_for_angle.append(
+                    {
+                        "file_path": fp_it,
+                        "item_start_open": int(s_it),
+                        "item_end_open": int(e_it),
+                        "source_start_in_file": int(src_it),
+                        "start_tc": start_tc_it,
+                        "fps": float(fps_it),
+                    }
+                )
+            clips_for_angle.sort(key=lambda c: int(c["item_start_open"]))
+            angle_source_clips_map[str(angle_idx)] = clips_for_angle
 
             log(
                 f"Track V{t}: file={fp} | item_start_open={item_start_open} | "
@@ -308,6 +341,7 @@ def main() -> int:
         "manual_angle_source_starts": source_starts,
         "manual_angle_start_tcs": source_start_tcs,
         "manual_angle_source_fps": source_fps,
+        "angle_source_clips_map": angle_source_clips_map,
         "pgm_reference_path": pgm_ref["file_path"] if pgm_ref else None,
         "pgm_reference_item_start_open": int(pgm_ref["item_start_open"]) if pgm_ref else 0,
         "pgm_reference_source_start_in_file": int(pgm_ref["source_start_in_file"]) if pgm_ref else 0,

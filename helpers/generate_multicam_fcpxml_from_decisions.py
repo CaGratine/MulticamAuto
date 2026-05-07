@@ -15,6 +15,17 @@ def frames_to_fcptime(frames: int, fps: int) -> str:
     return f"{int(frames)}/{int(fps)}s"
 
 
+def is_valid_tc(tc: str) -> bool:
+    parts = str(tc).strip().split(":")
+    if len(parts) != 4:
+        return False
+    try:
+        _ = [int(x) for x in parts]
+        return True
+    except Exception:
+        return False
+
+
 def timecode_to_frames(tc: str, fps: int) -> int:
     hh, mm, ss, ff = [int(x) for x in tc.split(":")]
     return ((hh * 3600) + (mm * 60) + ss) * int(fps) + ff
@@ -89,6 +100,7 @@ def main() -> int:
     src_source_starts: List[int] = list(data.get("manual_angle_source_starts") or [])
     src_start_tcs: List[str] = list(data.get("manual_angle_start_tcs") or [])
     src_source_fps: List[float] = list(data.get("manual_angle_source_fps") or [])
+    angle_source_clips_map: Dict[str, List[Dict[str, Any]]] = dict(data.get("angle_source_clips_map") or {})
     pgm_path = data.get("pgm_file_path")
     pgm_start_tc = str(data.get("pgm_reference_start_tc") or "00:00:00:00")
     pgm_source_fps = float(data.get("pgm_reference_fps") or fps)
@@ -97,8 +109,7 @@ def main() -> int:
     if not pgm_path:
         raise RuntimeError("pgm_file_path manquant dans decisions json.")
 
-    # Ajoute PGM comme dernier angle.
-    all_angle_paths = src_paths + [pgm_path]
+    mc_start_open = int(data.get("pgm_reference_sync_offset") or 0) + int(data.get("pgm_reference_item_start_open") or 0)
     # PGM comme angle final dans le multicam.
     pgm_sync_offset = int(data.get("pgm_reference_sync_offset") or 0)
     pgm_source_start = int(data.get("pgm_reference_source_start_in_file") or 0)
@@ -113,6 +124,7 @@ def main() -> int:
     all_source_starts = src_source_starts + [pgm_source_start]
     all_start_tcs = src_start_tcs + [pgm_start_tc]
     all_source_fps = src_source_fps + [pgm_source_fps]
+    all_angle_paths = src_paths + [pgm_path]
     angle_names = [x.strip() for x in args.angle_names.split(",")]
     while len(angle_names) < len(all_angle_paths):
         angle_names.append(f"ANGLE_{len(angle_names)+1}")
@@ -144,8 +156,22 @@ def main() -> int:
         },
     )
 
-    asset_ids: List[str] = []
-    for i, p in enumerate(all_angle_paths, start=1):
+    asset_ids_by_path: Dict[str, str] = {}
+    ordered_paths: List[str] = []
+    for p in all_angle_paths:
+        if p and p not in ordered_paths:
+            ordered_paths.append(p)
+    for rows in angle_source_clips_map.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            p = str(row.get("file_path") or "").strip()
+            if p and p not in ordered_paths:
+                ordered_paths.append(p)
+
+    for i, p in enumerate(ordered_paths, start=1):
         w, h, pfps, count = probe_video(p, fps)
         fmt_id = f"r_fmt_{i}"
         ET.SubElement(
@@ -160,9 +186,30 @@ def main() -> int:
             },
         )
         aid = f"r_asset_{i}"
-        asset_ids.append(aid)
-        start_tc_i = all_start_tcs[i - 1] if i - 1 < len(all_start_tcs) else "00:00:00:00"
-        tc_fps_i = float(all_source_fps[i - 1]) if i - 1 < len(all_source_fps) else float(fps)
+        asset_ids_by_path[p] = aid
+        tc_meta = None
+        for rows in angle_source_clips_map.values():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if isinstance(row, dict) and str(row.get("file_path") or "").strip() == p:
+                    tc_meta = row
+                    break
+            if tc_meta is not None:
+                break
+        if tc_meta is not None:
+            start_tc_i = str(tc_meta.get("start_tc") or "00:00:00:00").strip()
+            tc_fps_i = float(tc_meta.get("fps") or fps)
+        else:
+            base_idx = all_angle_paths.index(p) if p in all_angle_paths else -1
+            start_tc_i = all_start_tcs[base_idx] if base_idx >= 0 and base_idx < len(all_start_tcs) else "00:00:00:00"
+            tc_fps_i = float(all_source_fps[base_idx]) if base_idx >= 0 and base_idx < len(all_source_fps) else float(fps)
+        if (not is_valid_tc(start_tc_i)) or start_tc_i == "00:00:00:00":
+            base_idx = all_angle_paths.index(p) if p in all_angle_paths else -1
+            if base_idx >= 0 and base_idx < len(all_start_tcs):
+                base_tc = str(all_start_tcs[base_idx] or "").strip()
+                if is_valid_tc(base_tc):
+                    start_tc_i = base_tc
         start_frames_i = timecode_to_frames(start_tc_i, int(round(tc_fps_i)))
         ET.SubElement(
             resources,
@@ -197,27 +244,65 @@ def main() -> int:
     )
 
     angle_ids: Dict[int, str] = {}
-    for i, (name, aid) in enumerate(zip(angle_names, asset_ids), start=1):
+    for i, name in enumerate(angle_names, start=1):
         angle_id = str(uuid.uuid4())
         angle_ids[i] = angle_id
         mc_angle = ET.SubElement(multicam, "mc-angle", {"name": name, "angleID": angle_id})
+        if i <= len(src_paths):
+            rows = angle_source_clips_map.get(str(i))
+            if isinstance(rows, list) and rows:
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    p = str(row.get("file_path") or "").strip()
+                    aid = asset_ids_by_path.get(p)
+                    if not p or not aid:
+                        continue
+                    item_start_open = int(row.get("item_start_open") or 0)
+                    item_end_open = int(row.get("item_end_open") or item_start_open)
+                    source_start = int(row.get("source_start_in_file") or 0)
+                    start_tc_i = str(row.get("start_tc") or "00:00:00:00").strip()
+                    tc_fps_i = float(row.get("fps") or fps)
+                    if (not is_valid_tc(start_tc_i)) or start_tc_i == "00:00:00:00":
+                        if i - 1 < len(all_start_tcs):
+                            base_tc = str(all_start_tcs[i - 1] or "").strip()
+                            if is_valid_tc(base_tc):
+                                start_tc_i = base_tc
+                    asset_start_frames = timecode_to_frames(start_tc_i, int(round(tc_fps_i)))
+                    sync = mc_start_open - item_start_open
+                    clip_offset_frames = max(0, -sync)
+                    clip_start_frames = asset_start_frames + source_start + max(0, sync)
+                    clip_duration = max(1, item_end_open - item_start_open)
+                    ET.SubElement(
+                        mc_angle,
+                        "asset-clip",
+                        {
+                            "offset": frames_to_fcptime(clip_offset_frames, fps),
+                            "name": os.path.basename(p),
+                            "start": frames_to_fcptime(clip_start_frames, fps),
+                            "duration": frames_to_fcptime(clip_duration, fps),
+                            "ref": aid,
+                            "enabled": "1",
+                        },
+                    )
+                continue
         sync = int(all_sync_offsets[i - 1]) if i - 1 < len(all_sync_offsets) else 0
         source_start = int(all_source_starts[i - 1]) if i - 1 < len(all_source_starts) else 0
         start_tc_i = all_start_tcs[i - 1] if i - 1 < len(all_start_tcs) else "00:00:00:00"
         tc_fps_i = float(all_source_fps[i - 1]) if i - 1 < len(all_source_fps) else float(fps)
         asset_start_frames = timecode_to_frames(start_tc_i, int(round(tc_fps_i)))
-        # Conversion du modele de sync:
-        # item_start_open = mc_start_open - sync_offset
-        # => dans la multicam, le clip commence a offset=max(0,-sync)
-        # et son "start" dans le media source est ajuste si sync > 0.
         clip_offset_frames = max(0, -sync)
         clip_start_frames = asset_start_frames + source_start + max(0, sync)
+        p = all_angle_paths[i - 1]
+        aid = asset_ids_by_path.get(p)
+        if not aid:
+            continue
         ET.SubElement(
             mc_angle,
             "asset-clip",
             {
                 "offset": frames_to_fcptime(clip_offset_frames, fps),
-                "name": os.path.basename(all_angle_paths[i - 1]),
+                "name": os.path.basename(p),
                 "start": frames_to_fcptime(clip_start_frames, fps),
                 "duration": frames_to_fcptime(total_duration + start_frame, fps),
                 "ref": aid,
@@ -315,7 +400,9 @@ def main() -> int:
     elif (
         args.include_pgm_audio and args.mc_audio_mode != "pgm-angle"
     ):
-        pgm_asset_id = asset_ids[-1]
+        pgm_asset_id = asset_ids_by_path.get(pgm_path, "")
+        if not pgm_asset_id:
+            raise RuntimeError("Asset PGM introuvable dans les ressources.")
         pgm_asset_start = timecode_to_frames(pgm_start_tc, int(round(pgm_source_fps)))
         ET.SubElement(
             spine,

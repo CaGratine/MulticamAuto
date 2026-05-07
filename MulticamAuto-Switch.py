@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCRIPT_VERSION = "2026-05-06-01"
+_HELPER_PYTHON_CACHE: Optional[str] = None
 
 
 # ---------------------- Configuration utilisateur -------------------------- #
@@ -165,11 +166,17 @@ def resolve_local_script_path(script_name: str) -> str:
 
 
 def resolve_helper_python() -> str:
+    global _HELPER_PYTHON_CACHE
+    if _HELPER_PYTHON_CACHE and os.path.isfile(_HELPER_PYTHON_CACHE):
+        return _HELPER_PYTHON_CACHE
+
     env_py = (os.getenv("MULTICAM_HELPER_PYTHON") or "").strip()
     if env_py and os.path.isfile(env_py):
+        _HELPER_PYTHON_CACHE = env_py
         return env_py
     if HELPER_PYTHON_OVERRIDE.strip() and os.path.isfile(HELPER_PYTHON_OVERRIDE.strip()):
-        return HELPER_PYTHON_OVERRIDE.strip()
+        _HELPER_PYTHON_CACHE = HELPER_PYTHON_OVERRIDE.strip()
+        return _HELPER_PYTHON_CACHE
 
     candidates: List[str] = []
     if sys.executable:
@@ -205,18 +212,25 @@ def resolve_helper_python() -> str:
         if not os.path.isfile(c) or _is_bad_candidate(c):
             continue
         try:
+            probe_kwargs: Dict[str, Any] = {
+                "text": True,
+                "capture_output": True,
+                "check": False,
+                "timeout": 5,
+            }
+            if os.name == "nt":
+                probe_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             probe = subprocess.run(
                 [c, "-c", "import sys; print(sys.version_info[0])"],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=5,
+                **probe_kwargs,
             )
             if probe.returncode == 0 and (probe.stdout or "").strip().startswith(("3", "2")):
+                _HELPER_PYTHON_CACHE = c
                 return c
         except Exception:
             continue
-    return sys.executable
+    _HELPER_PYTHON_CACHE = sys.executable
+    return _HELPER_PYTHON_CACHE
 
 
 def parse_helper_json(stdout_text: str) -> Optional[Dict[str, Any]]:

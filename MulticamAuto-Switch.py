@@ -1,5 +1,5 @@
 """
-multicam_auto_switch_segments_inside_resolve.py
+MulticamAuto-Switch.py
 
 Version "inside Resolve" (Workspace > Scripts), sans connexion externe.
 Ce script applique des switches multicam a partir des segments PGM sur une piste.
@@ -38,7 +38,7 @@ USE_EXTRACTED_CONFIG_JSON = True
 EXTRACTED_CONFIG_JSON_NAME = "multicam_extracted_config.json"
 REQUIRE_FRESH_EXTRACTED_CONFIG_JSON = True
 EXTRACTED_CONFIG_MAX_AGE_MINUTES = 30
-FCPXML_GENERATOR_SCRIPT_NAME = "generate_multicam_fcpxml_from_decisions.py"
+FCPXML_GENERATOR_SCRIPT_NAME = "MulticamAutoFCPXML.py"
 GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
 FCPXML_START_TC = "00:00:00:00"
@@ -59,9 +59,9 @@ USE_PGM_REFERENCE_ANCHOR = True
 HELPER_PYTHON_OVERRIDE = ""
 # Sous-dossier optionnel contenant les scripts utilitaires (relatif au script principal).
 # Exemple: "helpers" ou "tools". Laisser "" pour dossier principal.
-TOOLS_SUBDIR = "helpers"
+TOOLS_SUBDIR = "MulticamAutoHelpers"
 # Nom du helper (resolu automatiquement a cote du script principal).
-HELPER_SCRIPT_NAME = "cv_hist_compare_helper.py"
+HELPER_SCRIPT_NAME = "MulticamAutoHelperCompare.py"
 # Fallback manuel si l'API n'expose pas les SourceClips multicam.
 # Renseigner 5 paths (angle 1..5) si necessaire.
 MANUAL_ANGLE_FILE_PATHS: List[str] = [
@@ -84,7 +84,7 @@ MANUAL_ANGLE_SOURCE_FPS: List[float] = [25.0, 25.0, 25.0, 25.0, 25.0]
 #   "2": [...]
 # }
 ANGLE_SOURCE_CLIPS_MAP: Dict[str, List[Dict[str, Any]]] = {}
-# Reference PGM issue de extract_multicam_angles_from_open_timeline.py
+# Reference PGM issue de MulticamAuto-Extract.py
 PGM_REFERENCE_PATH: Optional[str] = r"F:\Fermactory 2026\RUSHES\JOUR_02\PGM\CARTE_01\Capture0001.mov"
 
 PGM_REFERENCE_ITEM_START_OPEN: int = 90000
@@ -751,7 +751,7 @@ def main() -> int:
             msg = "[CONFIG] JSON absent (emplacements testes): " + " | ".join(cfg_candidates)
             if REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:
                 log(msg)
-                log("FAIL: lance d'abord extract_multicam_angles_from_open_timeline.py")
+                log("FAIL: lance d'abord MulticamAuto-Extract.py")
                 return 1
             log(f"{msg} -> fallback valeurs en dur.")
         else:
@@ -763,7 +763,7 @@ def main() -> int:
                 f"(max={max_age_seconds}s / {EXTRACTED_CONFIG_MAX_AGE_MINUTES} min)"
             )
             if age_seconds > max_age_seconds and REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:
-                log("FAIL: JSON config trop ancien; relance extract_multicam_angles_from_open_timeline.py")
+                log("FAIL: JSON config trop ancien; relance MulticamAuto-Extract.py")
                 return 1
             if not apply_extracted_config_json(cfg_path):
                 if REQUIRE_FRESH_EXTRACTED_CONFIG_JSON:

@@ -1,13 +1,13 @@
 # Auto Multicam From PGM (Resolve)
 
-Scripts pour automatiser un remontage multicam a partir d'un PGM dans DaVinci Resolve.
+Scripts pour automatiser un remontage multicam à partir d'un PGM dans DaVinci Resolve.
 
 ## Principe
 
-- Les cameras sont lues dans une timeline multicam ouverte (`V1..V(n-1)`).
-- Le `PGM` doit etre sur la derniere piste video (`Vn`).
-- Le script d'extraction genere un JSON de config.
-- Le script principal detecte les cuts du PGM, compare les angles, puis exporte:
+- Les caméras sont lues dans une timeline multicam ouverte (`V1..V(n-1)`).
+- Le `PGM` doit être sur la dernière piste vidéo (`Vn`).
+- Le script d'extraction génère un JSON de config.
+- Le script principal détecte les cuts du PGM, compare les angles, puis exporte :
   - une decision list (`multicam_decisions.json`)
   - un FCPXML
   - import automatique dans Resolve.
@@ -16,56 +16,74 @@ Scripts pour automatiser un remontage multicam a partir d'un PGM dans DaVinci Re
 
 ## Installation
 
+## Prérequis
+
+- DaVinci Resolve (Studio ou Free).
+- Python externe accessible (utilisé par les helpers).
+- OpenCV disponible pour le Python externe (`cv2`), car le matching passe par helper.
+
+Téléchargement Python (officiel) :
+
+- [https://www.python.org/downloads/](https://www.python.org/downloads/)
+
 ## Windows
 
-Copier les scripts dans:
+Installation des dépendances (terminal) :
+
+```powershell
+py -m pip install --upgrade pip
+py -m pip install opencv-python
+```
+
+Copier les scripts dans :
 
 `C:\ProgramData\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Edit\`
 
-Arborescence attendue:
+Arborescence attendue :
 
-- `multicam_auto_switch_segments_inside_resolve.py`
-- `extract_multicam_angles_from_open_timeline.py`
-- `helpers\cv_hist_compare_helper.py`
-- `helpers\generate_multicam_fcpxml_from_decisions.py`
+- `MulticamAuto-Switch.py`
+- `MulticamAuto-Extract.py`
+- `MulticamAutoHelpers\MulticamAutoHelperCompare.py`
+- `MulticamAutoHelpers\MulticamAutoFCPXML.py`
 
 ## macOS
 
-Copier les scripts dans:
+Installation des dépendances (terminal) :
+
+```bash
+python3 -m pip install --upgrade pip
+python3 -m pip install opencv-python
+```
+
+Copier les scripts dans :
 
 `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Edit/`
 
-Arborescence attendue:
+Arborescence attendue :
 
-- `multicam_auto_switch_segments_inside_resolve.py`
-- `extract_multicam_angles_from_open_timeline.py`
-- `helpers/cv_hist_compare_helper.py`
-- `helpers/generate_multicam_fcpxml_from_decisions.py`
-
-## Prerequis
-
-- DaVinci Resolve (Studio ou Free).
-- Python externe accessible (utilise par les helpers).
-- OpenCV disponible pour le Python externe (`cv2`), car le matching passe par helper.
+- `MulticamAuto-Switch.py`
+- `MulticamAuto-Extract.py`
+- `MulticamAutoHelpers/MulticamAutoHelperCompare.py`
+- `MulticamAutoHelpers/MulticamAutoFCPXML.py`
 
 ---
 
-## Workflow Resolve (recommande)
+## Workflow Resolve (recommandé)
 
-1. Faire la synchro multicam comme d'habitude, avec le **PGM sur la derniere piste**.
+1. Faire la synchro multicam comme d'habitude, avec le **PGM sur la dernière piste**.
 2. Ouvrir le multicam dans la timeline et copier tout le contenu.
 3. Faire une nouvelle timeline, y coller tout le contenu du multicam.
-4. Lancer le script `extract_multicam_angles_from_open_timeline.py`.
-5. Selectionner le media PGM dans le Media Pool (IN/OUT possible si besoin).
-6. Lancer le script `multicam_auto_switch_segments_inside_resolve.py`.
-7. Prendre un cafe.
-8. Une timeline nommee `NomDuPGM Auto` apparait, avec son clip multicam associe.
+4. Lancer le script `MulticamAuto-Extract.py`.
+5. Sélectionner le média PGM dans le Media Pool (IN/OUT possible si besoin).
+6. Lancer le script `MulticamAuto-Switch.py`.
+7. Prendre un café.
+8. Une timeline nommée `NomDuPGM Auto` apparaît, avec son clip multicam associé.
 9. Bon remontage.
 
 ---
 
 ## Notes importantes
 
-- Le nombre d'angles est dynamique, derive du JSON d'extraction.
-- Le mode multi-fichiers par angle est gere (ex: camera C coupee en plusieurs clips).
-- Les scripts `extract` et `auto_switch` doivent etre executes sur la meme machine/projet pour conserver des chemins media coherents.
+- Le nombre d'angles est dynamique, dérivé du JSON d'extraction.
+- Le mode multi-fichiers par angle est géré (ex : caméra C coupée en plusieurs clips).
+- Les scripts `extract` et `auto_switch` doivent être exécutés sur la même machine/projet pour conserver des chemins média cohérents.

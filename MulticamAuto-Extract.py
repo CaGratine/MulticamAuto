@@ -1,9 +1,9 @@
 """
-extract_multicam_angles_from_open_timeline.py
+MulticamAuto-Extract.py
 
 A lancer depuis Resolve APRES "Open in Timeline" du multicam et copié tout le contenue dans une nouvelle timeline.
 Le script lit les pistes video de la timeline ouverte et affiche
-des blocs prets a coller dans multicam_auto_switch_segments_inside_resolve.py:
+des blocs prets a coller dans MulticamAuto-Switch.py:
   - MANUAL_ANGLE_FILE_PATHS
   - MANUAL_ANGLE_SYNC_OFFSETS
   - MANUAL_ANGLE_SOURCE_STARTS
@@ -307,7 +307,7 @@ def main() -> int:
         log("FAIL: aucun angle detecte (File Path manquant sur pistes).")
         return 1
 
-    script_path = str(globals().get("__file__") or "extract_multicam_angles_from_open_timeline.py")
+    script_path = str(globals().get("__file__") or "MulticamAuto-Extract.py")
     out_json = choose_writable_config_path(script_path, project)
     if not out_json:
         log("FAIL: impossible de trouver un emplacement inscriptible pour le JSON config.")
@@ -333,7 +333,7 @@ def main() -> int:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     log(f"[EXPORT JSON] {out_json}")
 
-    log("\n--- A copier dans multicam_auto_switch_segments_inside_resolve.py ---")
+    log("\n--- A copier dans MulticamAuto-Switch.py ---")
     log("MANUAL_ANGLE_FILE_PATHS = [")
     for p in file_paths:
         log(f"    r\"{p}\",")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Helper externe pour multicam_auto_switch_segments_inside_resolve.py
+Helper externe pour MulticamAuto-Switch.py
 Lit un payload JSON depuis stdin et renvoie:
 {"best_angle": int|None, "best_score": float}
 """

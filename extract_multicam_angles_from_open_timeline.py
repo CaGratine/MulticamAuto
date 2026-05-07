@@ -190,12 +190,17 @@ def main() -> int:
     mc_start_open = to_int(safe_call(timeline, "GetStartFrame"), 0)
     log(f"mc_start_open={mc_start_open}")
 
-    # Filtre: typiquement les angles sont en MXF, le PGM en MP4/MOV.
-    KEEP_EXTS: Set[str] = {".mxf"}
-    MAX_ANGLES_TO_EXTRACT = 5
     v_count = to_int(safe_call(timeline, "GetTrackCount", "video"), 0)
     if v_count <= 0:
         log("FAIL: aucune piste video.")
+        return 1
+    # Hypothese imposee:
+    # - V1..V(n-1) = caméras (angles), dans l'ordre (V1 -> angle 1, V2 -> angle 2, ...)
+    # - Vn = PGM (dernier track video)
+    # => on deduit le nombre d'angles uniquement via les index de pistes.
+    MAX_ANGLES_TO_EXTRACT = max(0, v_count - 1)
+    if MAX_ANGLES_TO_EXTRACT <= 0:
+        log("FAIL: aucune piste camera (il faut au moins 2 pistes video: 1 cam + 1 PGM).")
         return 1
 
     # Cache des items par piste pour faire une extraction en 2 passes.
@@ -212,40 +217,42 @@ def main() -> int:
     angle_source_clips_map: Dict[str, List[Dict[str, Any]]] = {}
     pgm_ref: Optional[Dict[str, Any]] = None
 
-    # PASS 1: trouver la reference PGM.
-    for t in range(1, v_count + 1):
-        items = tracks_items.get(t, [])
-        if not items:
-            continue
-        item = choose_reference_item(items, mc_start_open)
-        if item is None:
-            continue
-        mp = safe_call(item, "GetMediaPoolItem")
-        props = safe_call(mp, "GetClipProperty") if mp else {}
-        props = props or {}
-        fp = (props.get("File Path") or "").strip()
-        if not fp:
-            continue
-        ext = os.path.splitext(fp)[1].lower()
-        if "pgm" not in fp.lower() and ext not in {".mp4", ".mov", ".mkv"}:
-            continue
-        item_start_open = to_int(safe_call(item, "GetStart"), 0)
-        source_start_in_file = to_int(safe_call(item, "GetSourceStartFrame"), 0)
-        start_tc = str(props.get("Start TC") or props.get("Start Timecode") or "00:00:00:00").strip()
-        clip_fps = infer_clip_fps(props, timeline_fps)
-        pgm_ref = {
-            "track_index": t,
-            "file_path": fp,
-            "item_start_open": item_start_open,
-            "source_start_in_file": source_start_in_file,
-            "start_tc": start_tc,
-            "fps": clip_fps,
-        }
-        log(
-            f"PGM REF on V{t}: path={fp} | item_start_open={item_start_open} | "
-            f"source_start_in_file={source_start_in_file} | fps={clip_fps}"
-        )
-        break
+    # PASS 1: trouver la reference PGM (dernier track video).
+    pgm_track = v_count
+    items = tracks_items.get(pgm_track, [])
+    if not items:
+        log(f"FAIL: PGM introuvable sur le dernier track V{pgm_track}.")
+        return 1
+    item = choose_reference_item(items, mc_start_open)
+    if item is None:
+        log(f"FAIL: impossible de choisir un clip PGM représentatif sur V{pgm_track}.")
+        return 1
+    mp = safe_call(item, "GetMediaPoolItem")
+    props = safe_call(mp, "GetClipProperty") if mp else {}
+    props = props or {}
+    fp = (props.get("File Path") or "").strip()
+    if not fp:
+        log(f"FAIL: PGM clip sans File Path sur V{pgm_track}.")
+        return 1
+    item_start_open = to_int(safe_call(item, "GetStart"), 0)
+    source_start_in_file = to_int(safe_call(item, "GetSourceStartFrame"), 0)
+    start_tc = str(
+        props.get("Start TC") or props.get("Start Timecode") or "00:00:00:00"
+    ).strip()
+    clip_fps = infer_clip_fps(props, timeline_fps)
+    pgm_ref = {
+        "track_index": pgm_track,
+        "file_path": fp,
+        "item_start_open": item_start_open,
+        "source_start_in_file": source_start_in_file,
+        "start_tc": start_tc,
+        "fps": clip_fps,
+    }
+    log(
+        f"PGM REF (dernier track) on V{pgm_track}: path={fp} | "
+        f"item_start_open={item_start_open} | source_start_in_file={source_start_in_file} | "
+        f"fps={clip_fps}"
+    )
 
     # Reference temporelle pour les angles camera:
     # priorite au debut reel du PGM (plus representatif de la decision list).
@@ -253,7 +260,9 @@ def main() -> int:
     log(f"reference_open_for_angles={ref_open}")
 
     # PASS 2: extraire les angles camera en se calant sur ref_open.
-    for t in range(1, v_count + 1):
+    angle_tracks = list(range(1, MAX_ANGLES_TO_EXTRACT + 1))
+
+    for t in angle_tracks:
         items = tracks_items.get(t, [])
         if not items:
             continue
@@ -267,64 +276,53 @@ def main() -> int:
         if not fp:
             continue
 
-        ext = os.path.splitext(fp)[1].lower()
-        if KEEP_EXTS and ext not in KEEP_EXTS:
-            log(f"Skip track V{t}: ext={ext} path={fp}")
-            continue
-
         item_start_open = to_int(safe_call(item, "GetStart"), 0)
         source_start_in_file = to_int(safe_call(item, "GetSourceStartFrame"), 0)
         start_tc = str(props.get("Start TC") or props.get("Start Timecode") or "00:00:00:00").strip()
         clip_fps = infer_clip_fps(props, timeline_fps)
         sync = mc_start_open - item_start_open
 
-        if len(file_paths) < MAX_ANGLES_TO_EXTRACT:
-            angle_idx = len(file_paths) + 1
-            file_paths.append(fp)
-            sync_offsets.append(sync)
-            source_starts.append(source_start_in_file)
-            source_start_tcs.append(start_tc)
-            source_fps.append(clip_fps)
+        angle_idx = len(file_paths) + 1
+        file_paths.append(fp)
+        sync_offsets.append(sync)
+        source_starts.append(source_start_in_file)
+        source_start_tcs.append(start_tc)
+        source_fps.append(clip_fps)
 
-            clips_for_angle: List[Dict[str, Any]] = []
-            for it in items:
-                mp_it = safe_call(it, "GetMediaPoolItem")
-                props_it = safe_call(mp_it, "GetClipProperty") if mp_it else {}
-                props_it = props_it or {}
-                fp_it = (props_it.get("File Path") or "").strip()
-                if not fp_it:
-                    continue
-                ext_it = os.path.splitext(fp_it)[1].lower()
-                if KEEP_EXTS and ext_it not in KEEP_EXTS:
-                    continue
-                s_it = to_int(safe_call(it, "GetStart"), 0)
-                e_it = to_int(safe_call(it, "GetEnd"), s_it)
-                src_it = to_int(safe_call(it, "GetSourceStartFrame"), 0)
-                start_tc_it = str(props_it.get("Start TC") or props_it.get("Start Timecode") or "00:00:00:00").strip()
-                fps_it = infer_clip_fps(props_it, timeline_fps)
-                if e_it <= s_it:
-                    continue
-                clips_for_angle.append(
-                    {
-                        "file_path": fp_it,
-                        "item_start_open": int(s_it),
-                        "item_end_open": int(e_it),
-                        "source_start_in_file": int(src_it),
-                        "start_tc": start_tc_it,
-                        "fps": float(fps_it),
-                    }
-                )
-            clips_for_angle.sort(key=lambda c: int(c["item_start_open"]))
-            angle_source_clips_map[str(angle_idx)] = clips_for_angle
+        clips_for_angle: List[Dict[str, Any]] = []
+        for it in items:
+            mp_it = safe_call(it, "GetMediaPoolItem")
+            props_it = safe_call(mp_it, "GetClipProperty") if mp_it else {}
+            props_it = props_it or {}
+            fp_it = (props_it.get("File Path") or "").strip()
+            if not fp_it:
+                continue
+            s_it = to_int(safe_call(it, "GetStart"), 0)
+            e_it = to_int(safe_call(it, "GetEnd"), s_it)
+            src_it = to_int(safe_call(it, "GetSourceStartFrame"), 0)
+            start_tc_it = str(
+                props_it.get("Start TC") or props_it.get("Start Timecode") or "00:00:00:00"
+            ).strip()
+            fps_it = infer_clip_fps(props_it, timeline_fps)
+            if e_it <= s_it:
+                continue
+            clips_for_angle.append(
+                {
+                    "file_path": fp_it,
+                    "item_start_open": int(s_it),
+                    "item_end_open": int(e_it),
+                    "source_start_in_file": int(src_it),
+                    "start_tc": start_tc_it,
+                    "fps": float(fps_it),
+                }
+            )
+        clips_for_angle.sort(key=lambda c: int(c["item_start_open"]))
+        angle_source_clips_map[str(angle_idx)] = clips_for_angle
 
-            log(
-                f"Track V{t}: file={fp} | item_start_open={item_start_open} | "
-                f"source_start_in_file={source_start_in_file} | sync_offset={sync} | fps={clip_fps}"
-            )
-        else:
-            log(
-                f"Skip extra camera track V{t} (already {MAX_ANGLES_TO_EXTRACT} angles): {fp}"
-            )
+        log(
+            f"Track V{t}: file={fp} | item_start_open={item_start_open} | "
+            f"source_start_in_file={source_start_in_file} | sync_offset={sync} | fps={clip_fps}"
+        )
 
     if not file_paths:
         log("FAIL: aucun angle detecte (File Path manquant sur pistes).")

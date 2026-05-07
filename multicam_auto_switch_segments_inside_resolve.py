@@ -777,6 +777,12 @@ def main() -> int:
                 log(f"[CONFIG] JSON non chargeable, fallback valeurs en dur: {cfg_path}")
     log(f"MANUAL_ANGLE_FILE_PATHS count: {len(MANUAL_ANGLE_FILE_PATHS)}")
     angle_source_clips = parse_angle_source_clips()
+    # Nombre d'angles dynamique pour comparer selon le JSON extrait.
+    dynamic_angle_count = (
+        len(MANUAL_ANGLE_FILE_PATHS)
+        or (max(angle_source_clips.keys()) if angle_source_clips else 0)
+        or MAX_ANGLES
+    )
     anchor_enabled = USE_PGM_REFERENCE_ANCHOR and (PGM_REFERENCE_ITEM_START_OPEN > 0)
     log(
         "PGM anchor: "
@@ -850,7 +856,7 @@ def main() -> int:
 
     angles: List[AngleInfo] = []
     if ordered:
-        for idx, src in enumerate(ordered[:MAX_ANGLES], 1):
+        for idx, src in enumerate(ordered[:dynamic_angle_count], 1):
             mp = safe_call(src, "GetMediaPoolItem") or src
             props = safe_call(mp, "GetClipProperty") or {}
             fp = (props.get("File Path") or "").strip()
@@ -867,7 +873,7 @@ def main() -> int:
     elif MANUAL_ANGLE_FILE_PATHS:
         used_manual = True
         log("SourceClips API indisponible -> fallback MANUAL_ANGLE_FILE_PATHS.")
-        for idx, fp in enumerate(MANUAL_ANGLE_FILE_PATHS[:MAX_ANGLES], 1):
+        for idx, fp in enumerate(MANUAL_ANGLE_FILE_PATHS[:dynamic_angle_count], 1):
             sync = MANUAL_ANGLE_SYNC_OFFSETS[idx - 1] if idx - 1 < len(MANUAL_ANGLE_SYNC_OFFSETS) else 0
             start = MANUAL_ANGLE_SOURCE_STARTS[idx - 1] if idx - 1 < len(MANUAL_ANGLE_SOURCE_STARTS) else 0
             angles.append(

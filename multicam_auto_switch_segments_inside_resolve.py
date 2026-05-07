@@ -24,7 +24,6 @@ SCRIPT_VERSION = "2026-05-06-01"
 # ---------------------- Configuration utilisateur -------------------------- #
 PGM_TRACK = 1
 MULTICAM_TRACK = 1
-MAX_ANGLES = 5
 SYNC_MODE = "relative"  # "relative" | "timecode"
 CONFIDENCE_THRESHOLD = 0.30
 # En workflow "decision list", on prefere garder le meilleur angle trouve
@@ -781,8 +780,11 @@ def main() -> int:
     dynamic_angle_count = (
         len(MANUAL_ANGLE_FILE_PATHS)
         or (max(angle_source_clips.keys()) if angle_source_clips else 0)
-        or MAX_ANGLES
     )
+    if dynamic_angle_count <= 0:
+        log("FAIL: aucun angle detecte dans le JSON (manual_angle_file_paths vide).")
+        return 1
+    log(f"[CONFIG] dynamic_angle_count={dynamic_angle_count}")
     anchor_enabled = USE_PGM_REFERENCE_ANCHOR and (PGM_REFERENCE_ITEM_START_OPEN > 0)
     log(
         "PGM anchor: "

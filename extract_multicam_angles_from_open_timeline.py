@@ -1,8 +1,8 @@
 """
 extract_multicam_angles_from_open_timeline.py
 
-A lancer depuis Resolve APRES "Open in Timeline" du multicam.
-Le script lit les pistes video de la timeline multicam ouverte et affiche
+A lancer depuis Resolve APRES "Open in Timeline" du multicam et copié tout le contenue dans une nouvelle timeline.
+Le script lit les pistes video de la timeline ouverte et affiche
 des blocs prets a coller dans multicam_auto_switch_segments_inside_resolve.py:
   - MANUAL_ANGLE_FILE_PATHS
   - MANUAL_ANGLE_SYNC_OFFSETS
@@ -15,10 +15,9 @@ import json
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 OUTPUT_JSON_NAME = "multicam_extracted_config.json"
-DEBUG_LOG_CACHE_SETTINGS = True
 
 
 def is_writable_dir(path: str) -> bool:
@@ -38,26 +37,7 @@ def get_project_cache_dir(project: Any) -> Optional[str]:
         p = safe_call(project, "GetSetting", key)
         if isinstance(p, str) and p.strip():
             return p.strip()
-    settings = safe_call(project, "GetSetting")
-    if isinstance(settings, dict):
-        for k, v in settings.items():
-            if "cache" in str(k).lower() and isinstance(v, str) and v.strip():
-                return v.strip()
     return None
-
-
-def log_cache_related_project_settings(project: Any) -> None:
-    settings = safe_call(project, "GetSetting")
-    if not isinstance(settings, dict):
-        log("[DEBUG CACHE] Project:GetSetting() indisponible ou non-dict.")
-        return
-    cache_items = [(str(k), v) for k, v in settings.items() if "cache" in str(k).lower()]
-    if not cache_items:
-        log("[DEBUG CACHE] aucune cle contenant 'cache' dans Project:GetSetting().")
-        return
-    log("[DEBUG CACHE] cles detectees:")
-    for k, v in sorted(cache_items, key=lambda kv: kv[0].lower()):
-        log(f"  - {k} = {v}")
 
 
 def config_json_candidates(script_path: str, project: Any) -> List[str]:
@@ -174,8 +154,6 @@ def main() -> int:
 
     pm = resolve.GetProjectManager()
     project = pm.GetCurrentProject() if pm else None
-    if DEBUG_LOG_CACHE_SETTINGS and project:
-        log_cache_related_project_settings(project)
     timeline = project.GetCurrentTimeline() if project else None
     if not timeline:
         log("FAIL: aucune timeline active.")
@@ -195,13 +173,14 @@ def main() -> int:
         log("FAIL: aucune piste video.")
         return 1
     # Hypothese imposee:
-    # - V1..V(n-1) = caméras (angles), dans l'ordre (V1 -> angle 1, V2 -> angle 2, ...)
+    # - V1..V(n-1) = cameras (angles), dans l'ordre (V1 -> angle 1, V2 -> angle 2, ...)
     # - Vn = PGM (dernier track video)
     # => on deduit le nombre d'angles uniquement via les index de pistes.
     MAX_ANGLES_TO_EXTRACT = max(0, v_count - 1)
     if MAX_ANGLES_TO_EXTRACT <= 0:
-        log("FAIL: aucune piste camera (il faut au moins 2 pistes video: 1 cam + 1 PGM).")
+        log("FAIL: aucune piste camera (minimum: 2 pistes video = 1 camera + 1 PGM).")
         return 1
+    log(f"angles_detectes={MAX_ANGLES_TO_EXTRACT} (tracks camera V1..V{MAX_ANGLES_TO_EXTRACT})")
 
     # Cache des items par piste pour faire une extraction en 2 passes.
     tracks_items: Dict[int, List[Any]] = {}
@@ -225,7 +204,7 @@ def main() -> int:
         return 1
     item = choose_reference_item(items, mc_start_open)
     if item is None:
-        log(f"FAIL: impossible de choisir un clip PGM représentatif sur V{pgm_track}.")
+        log(f"FAIL: impossible de choisir un clip PGM representatif sur V{pgm_track}.")
         return 1
     mp = safe_call(item, "GetMediaPoolItem")
     props = safe_call(mp, "GetClipProperty") if mp else {}

@@ -62,14 +62,7 @@ INITIAL_ANGLE = 1
 MARKER_COLOR = "Yellow"
 DOWNSCALE_SIZE = (160, 90)
 DEBUG_IO = True
-FORCE_EXTERNAL_HELPER_MATCHING = True
 CALIBRATE_MANUAL_OFFSETS = False  # decale sync_offset pour empecher frame_idx negatif
-# Mapping frame PGM source:
-# - "left-offset": utilise uniquement GetLeftOffset()
-# - "source-plus-left-offset": utilise GetSourceStartFrame() + GetLeftOffset()
-# NOTE: pour une timeline issue de DetectSceneCuts sur le PGM, left_offset
-# correspond deja a la frame source PGM (ex: premier segment -> 8134).
-PGM_FRAME_INDEX_MODE = "left-offset"
 # Si True, on ancre les calculs sur la reference PGM extraite du multicam ouvert.
 # C'est le mode recommande quand la timeline "decision" est construite a partir du PGM.
 USE_PGM_REFERENCE_ANCHOR = True
@@ -733,12 +726,7 @@ def main() -> int:
         f"item_start_open={PGM_REFERENCE_ITEM_START_OPEN} "
         f"source_start_in_file={PGM_REFERENCE_SOURCE_START_IN_FILE}"
     )
-    if FORCE_EXTERNAL_HELPER_MATCHING:
-        log("Mode comparaison: helper externe (force, score combine)")
-    elif CV_AVAILABLE:
-        log("Mode comparaison: OpenCV interne Resolve (histogramme seul)")
-    else:
-        log("Mode comparaison: helper externe (cv2 indisponible en interne)")
+    log("Comparaison: helper externe (score combine)")
     timeline = None
     selected_pgm_name_for_export: Optional[str] = None
     if project and AUTO_CREATE_TIMELINE_FROM_SELECTED_PGM:
@@ -852,8 +840,7 @@ def main() -> int:
         log("FAIL: aucun angle avec File Path valide.")
         return 1
 
-    use_internal_cv = (not FORCE_EXTERNAL_HELPER_MATCHING) and CV_AVAILABLE
-    cache = FrameCache() if use_internal_cv else None
+    cache = None
     prev_angle = INITIAL_ANGLE
     decisions: List[Dict[str, Any]] = []
     total_segments = len(segments)
@@ -895,10 +882,9 @@ def main() -> int:
 
             left_offset = to_int(safe_call(seg.item, "GetLeftOffset")) or 0
             pgm_src_start = infer_source_start_frame(seg.item, pgm_mp, fps)
-            if PGM_FRAME_INDEX_MODE == "left-offset":
-                pgm_frame_idx = left_offset
-            else:
-                pgm_frame_idx = pgm_src_start + left_offset
+            # Dans une timeline de cuts issue du PGM, left_offset est deja
+            # l'index de frame source PGM (ex: premier segment -> 8134).
+            pgm_frame_idx = left_offset
             rel = seg.start - mc_start
 
             # Ancrage PGM: rel=0 correspond au "debut de decision timeline".
@@ -911,61 +897,36 @@ def main() -> int:
             if DEBUG_IO:
                 log(
                     f"[DEBUG] Segment {seg.index} {seg_tc}: "
-                    f"mode={PGM_FRAME_INDEX_MODE} "
                     f"pgm_src_start={pgm_src_start} left_offset={left_offset} "
                     f"rel={rel} pgm_frame_idx={pgm_frame_idx}"
                 )
             best_angle = None
             best_score = -1.0
             anchor_shift = PGM_REFERENCE_ITEM_START_OPEN - mc_start
-            if use_internal_cv:
-                pgm_frame = cache.read(pgm_fp, pgm_frame_idx) if cache else None
-                if pgm_frame is None:
-                    log(f"[WARN] Segment {seg.index} {seg_tc}: impossible lire frame PGM.")
-                    continue
-                for ang in angles:
-                    if SYNC_MODE == "timecode":
-                        src_frame_idx = seg.start + ang.sync_offset
+            candidates: List[Tuple[int, str, int]] = []
+            for ang in angles:
+                if SYNC_MODE == "timecode":
+                    src_frame_idx = seg.start + ang.sync_offset
+                else:
+                    if anchor_enabled:
+                        src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
                     else:
-                        if anchor_enabled:
-                            # Decale rel pour qu'il corresponde a la meme origine que
-                            # la timeline multicam ouverte (reference PGM).
-                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
-                        else:
-                            src_frame_idx = ang.source_start + rel + ang.sync_offset
-                    src_frame_idx += match_extra_offsets.get(ang.angle, 0)
-                    src_frame = cache.read(ang.file_path, src_frame_idx) if cache else None
-                    if src_frame is None:
-                        continue
-                    score = hist_score(pgm_frame, src_frame, DOWNSCALE_SIZE)
-                    if score > best_score:
-                        best_score = score
-                        best_angle = ang.angle
-            else:
-                candidates: List[Tuple[int, str, int]] = []
-                for ang in angles:
-                    if SYNC_MODE == "timecode":
-                        src_frame_idx = seg.start + ang.sync_offset
-                    else:
-                        if anchor_enabled:
-                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
-                        else:
-                            src_frame_idx = ang.source_start + rel + ang.sync_offset
-                    src_frame_idx += match_extra_offsets.get(ang.angle, 0)
-                    candidates.append((ang.angle, ang.file_path, src_frame_idx))
-                if DEBUG_IO:
-                    for a, p, fidx in candidates:
-                        log(
-                            f"[DEBUG] candidate angle={a} frame={fidx} "
-                            f"exists={os.path.isfile(p)} path={p}"
-                        )
-                best_angle, best_score = hist_score_external(
-                    pgm_path=pgm_fp,
-                    pgm_frame_idx=pgm_frame_idx,
-                    candidates=candidates,
-                    size=DOWNSCALE_SIZE,
-                    timeline_fps=fps,
-                )
+                        src_frame_idx = ang.source_start + rel + ang.sync_offset
+                src_frame_idx += match_extra_offsets.get(ang.angle, 0)
+                candidates.append((ang.angle, ang.file_path, src_frame_idx))
+            if DEBUG_IO:
+                for a, p, fidx in candidates:
+                    log(
+                        f"[DEBUG] candidate angle={a} frame={fidx} "
+                        f"exists={os.path.isfile(p)} path={p}"
+                    )
+            best_angle, best_score = hist_score_external(
+                pgm_path=pgm_fp,
+                pgm_frame_idx=pgm_frame_idx,
+                candidates=candidates,
+                size=DOWNSCALE_SIZE,
+                timeline_fps=fps,
+            )
 
             if best_angle is None:
                 decisions.append(

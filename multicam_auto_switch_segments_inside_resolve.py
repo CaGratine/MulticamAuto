@@ -20,15 +20,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCRIPT_VERSION = "2026-05-06-01"
 
-try:
-    import cv2  # type: ignore
-    import numpy as np  # type: ignore
-    CV_AVAILABLE = True
-except Exception:
-    cv2 = None  # type: ignore
-    np = None  # type: ignore
-    CV_AVAILABLE = False
-
 
 # ---------------------- Configuration utilisateur -------------------------- #
 PGM_TRACK = 1
@@ -54,7 +45,7 @@ GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
 FCPXML_START_TC = "00:00:00:00"
 FCPXML_AUDIO_MODE = "single-pgm-track"  # selected-angle | video-only | pgm-angle | single-pgm-track
-# Recale uniquement les indices utilises pour le matching OpenCV afin
+# Recale uniquement les indices utilises pour le matching helper afin
 # d'eviter des frames negatives en debut de decision list.
 AUTO_MATCH_CALIBRATE_TO_PGM_START = False
 MIN_SEGMENT_FRAMES = 10
@@ -66,7 +57,7 @@ CALIBRATE_MANUAL_OFFSETS = False  # decale sync_offset pour empecher frame_idx n
 # Si True, on ancre les calculs sur la reference PGM extraite du multicam ouvert.
 # C'est le mode recommande quand la timeline "decision" est construite a partir du PGM.
 USE_PGM_REFERENCE_ANCHOR = True
-# Fallback externe si cv2/numpy indisponibles dans Python Resolve.
+# Python utilise pour le helper externe de comparaison.
 # Si vide, auto-detection: env MULTICAM_HELPER_PYTHON -> sys.executable.
 HELPER_PYTHON_OVERRIDE = ""
 # Sous-dossier optionnel contenant les scripts utilitaires (relatif au script principal).
@@ -363,41 +354,6 @@ def debug_methods(obj: Any, title: str) -> None:
             log(f"  - {n}")
     except Exception:
         pass
-
-
-class FrameCache:
-    def __init__(self) -> None:
-        self.caps: Dict[str, Any] = {}
-
-    def read(self, path: str, frame_idx: int) -> Optional[np.ndarray]:
-        if frame_idx < 0 or not os.path.isfile(path):
-            return None
-        cap = self.caps.get(path)
-        if cap is None:
-            cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
-                return None
-            self.caps[path] = cap
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ok, frame = cap.read()
-        if not ok:
-            return None
-        return frame
-
-    def close(self) -> None:
-        for cap in self.caps.values():
-            cap.release()
-        self.caps.clear()
-
-
-def hist_score(a: np.ndarray, b: np.ndarray, size: Tuple[int, int]) -> float:
-    sa = cv2.resize(a, size, interpolation=cv2.INTER_AREA)
-    sb = cv2.resize(b, size, interpolation=cv2.INTER_AREA)
-    ha = cv2.calcHist([cv2.cvtColor(sa, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
-    hb = cv2.calcHist([cv2.cvtColor(sb, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
-    cv2.normalize(ha, ha, 0, 1, cv2.NORM_MINMAX)
-    cv2.normalize(hb, hb, 0, 1, cv2.NORM_MINMAX)
-    return float(cv2.compareHist(ha, hb, cv2.HISTCMP_CORREL))
 
 
 def hist_score_external(
@@ -840,7 +796,6 @@ def main() -> int:
         log("FAIL: aucun angle avec File Path valide.")
         return 1
 
-    cache = None
     prev_angle = INITIAL_ANGLE
     decisions: List[Dict[str, Any]] = []
     total_segments = len(segments)
@@ -1001,8 +956,7 @@ def main() -> int:
                 prev_angle = final_angle
                 log(f"[DECISION] Segment {seg.index} {seg_tc} -> angle {final_angle} score {best_score:.3f}")
     finally:
-        if cache:
-            cache.close()
+        pass
 
     if EXPORT_DECISIONS_JSON:
         export_dir = choose_export_dir(project, script_dir)

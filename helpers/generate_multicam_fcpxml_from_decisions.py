@@ -67,13 +67,6 @@ def main() -> int:
     ap.add_argument("--timeline-name", default="Timeline Auto Multicam")
     ap.add_argument("--start-tc", default="01:00:00:00")
     ap.add_argument("--angle-names", default="A,B,C,D,E,PGM")
-    ap.add_argument("--include-pgm-audio", action="store_true")
-    ap.add_argument(
-        "--mc-audio-mode",
-        choices=["selected-angle", "video-only", "pgm-angle", "single-pgm-track"],
-        default="single-pgm-track",
-        help="Audio: angle selectionne, video seule, audio PGM dans mc-clip, ou un seul mc-clip audio PGM",
-    )
     ap.add_argument(
         "--zero-based-sequence",
         action="store_true",
@@ -368,56 +361,23 @@ def main() -> int:
                 "ref": media_id,
             },
         )
-        if args.mc_audio_mode == "selected-angle":
-            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "all"})
-        elif args.mc_audio_mode == "pgm-angle":
-            # Video de l'angle decide + audio fixe depuis l'angle PGM.
-            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
-            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[len(all_angle_paths)], "srcEnable": "audio"})
-        else:
-            ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
+        ET.SubElement(mc, "mc-source", {"angleID": angle_ids[final_angle], "srcEnable": "video"})
 
-    # Audio PGM continu:
-    # - mode "single-pgm-track": un seul segment mc-clip audio (angle PGM)
-    # - legacy: include_pgm_audio explicite (sauf si audio deja dans mc-clip pgm-angle)
-    if args.mc_audio_mode == "single-pgm-track":
-        audio_mc_start = first_multicam_media_pos if first_multicam_media_pos is not None else 0
-        mc_audio = ET.SubElement(
-            spine,
-            "mc-clip",
-            {
-                "offset": frames_to_fcptime(tc_start_frames, fps),
-                "offset": frames_to_fcptime(0, fps),
-                "offset": frames_to_fcptime(seq_tc_start_frames, fps),
-                "name": f"{multicam_display_name} Audio PGM",
-                "start": frames_to_fcptime(seq_tc_start_frames + audio_mc_start, fps),
-                "duration": frames_to_fcptime(total_duration, fps),
-                "ref": media_id,
-                "lane": "1",
-            },
-        )
-        ET.SubElement(mc_audio, "mc-source", {"angleID": angle_ids[len(all_angle_paths)], "srcEnable": "audio"})
-    elif (
-        args.include_pgm_audio and args.mc_audio_mode != "pgm-angle"
-    ):
-        pgm_asset_id = asset_ids_by_path.get(pgm_path, "")
-        if not pgm_asset_id:
-            raise RuntimeError("Asset PGM introuvable dans les ressources.")
-        pgm_asset_start = timecode_to_frames(pgm_start_tc, int(round(pgm_source_fps)))
-        ET.SubElement(
-            spine,
-            "asset-clip",
-            {
-                # Piste audio asset legacy: repere absolu sequence.
-                "offset": frames_to_fcptime(seq_tc_start_frames, fps),
-                "name": os.path.basename(pgm_path),
-                "start": frames_to_fcptime(pgm_asset_start + pgm_source_start, fps),
-                "duration": frames_to_fcptime(total_duration, fps),
-                "ref": pgm_asset_id,
-                "enabled": "1",
-                "lane": "1",
-            },
-        )
+    # Audio PGM continu via un seul mc-clip audio.
+    audio_mc_start = first_multicam_media_pos if first_multicam_media_pos is not None else 0
+    mc_audio = ET.SubElement(
+        spine,
+        "mc-clip",
+        {
+            "offset": frames_to_fcptime(seq_tc_start_frames, fps),
+            "name": f"{multicam_display_name} Audio PGM",
+            "start": frames_to_fcptime(seq_tc_start_frames + audio_mc_start, fps),
+            "duration": frames_to_fcptime(total_duration, fps),
+            "ref": media_id,
+            "lane": "1",
+        },
+    )
+    ET.SubElement(mc_audio, "mc-source", {"angleID": angle_ids[len(all_angle_paths)], "srcEnable": "audio"})
 
     indent(root)
     xml = ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")

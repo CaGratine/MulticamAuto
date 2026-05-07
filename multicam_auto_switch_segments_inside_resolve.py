@@ -24,7 +24,6 @@ SCRIPT_VERSION = "2026-05-06-01"
 # ---------------------- Configuration utilisateur -------------------------- #
 PGM_TRACK = 1
 MULTICAM_TRACK = 1
-SYNC_MODE = "relative"  # "relative" | "timecode"
 CONFIDENCE_THRESHOLD = 0.30
 # En workflow "decision list", on prefere garder le meilleur angle trouve
 # meme si le score est sous le seuil, plutot que figer l'angle precedent.
@@ -43,7 +42,6 @@ FCPXML_GENERATOR_SCRIPT_NAME = "generate_multicam_fcpxml_from_decisions.py"
 GENERATED_FCPXML_NAME = "Timeline_auto_multicam.fcpxml"
 FCPXML_TIMELINE_NAME = "Timeline Auto Multicam"
 FCPXML_START_TC = "00:00:00:00"
-FCPXML_AUDIO_MODE = "single-pgm-track"  # selected-angle | video-only | pgm-angle | single-pgm-track
 # Recale uniquement les indices utilises pour le matching helper afin
 # d'eviter des frames negatives en debut de decision list.
 AUTO_MATCH_CALIBRATE_TO_PGM_START = False
@@ -469,8 +467,6 @@ def run_generate_fcpxml(decisions_json: str, output_fcpxml: str, timeline_name: 
         effective_timeline_name,
         "--start-tc",
         FCPXML_START_TC,
-        "--mc-audio-mode",
-        FCPXML_AUDIO_MODE,
     ]
     kwargs: Dict[str, Any] = {"text": True, "capture_output": True, "check": False}
     if os.name == "nt":
@@ -982,13 +978,10 @@ def main() -> int:
                     src_path, src_frame_idx = multi
                 else:
                     src_path = ang.file_path
-                    if SYNC_MODE == "timecode":
-                        src_frame_idx = seg.start + ang.sync_offset
+                    if anchor_enabled:
+                        src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
                     else:
-                        if anchor_enabled:
-                            src_frame_idx = ang.source_start + rel + anchor_shift + ang.sync_offset
-                        else:
-                            src_frame_idx = ang.source_start + rel + ang.sync_offset
+                        src_frame_idx = ang.source_start + rel + ang.sync_offset
                 src_frame_idx += match_extra_offsets.get(ang.angle, 0)
                 candidates.append((ang.angle, src_path, src_frame_idx))
             if DEBUG_IO:
